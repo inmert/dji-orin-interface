@@ -17,10 +17,12 @@ type Dir = keyof typeof DIRS;
 function GimbalPad({
   camera,
   attitude,
+  linked,
   send,
 }: {
   camera: number;
   attitude?: GimbalAttitude;
+  linked: boolean;
   send: (c: Command) => void;
 }) {
   const [speed, setSpeed] = useState(200);
@@ -57,7 +59,11 @@ function GimbalPad({
     <section className="card">
       <div className="card-head">
         <h2>Camera {camera}</h2>
-        <span className="muted">gimbal index {CAMERA_INDEX[camera]}</span>
+        {linked ? (
+          <span className="tag link">linked</span>
+        ) : (
+          <span className="muted">gimbal index {CAMERA_INDEX[camera]}</span>
+        )}
       </div>
 
       <div className="video-placeholder">
@@ -143,7 +149,13 @@ function StreamsTable({ telemetry }: { telemetry: Telemetry }) {
 
 export function App() {
   const { status, telemetry, send } = useLink();
+  const [linked, setLinked] = useState(false);
   const stopAll = () => send({ cmd: "stop" });
+  const toggleLink = () => {
+    const on = !linked;
+    setLinked(on);
+    send({ cmd: "link", on });
+  };
 
   return (
     <div className="app">
@@ -152,6 +164,13 @@ export function App() {
         <div className="status">
           <span className={`dot ${status}`} />
           {status === "open" ? (telemetry.link_up ? "link up" : "server, no aircraft") : status}
+          <button
+            className={`link-toggle${linked ? " on" : ""}`}
+            onClick={toggleLink}
+            title="Snap camera 2 to camera 1 and move both together"
+          >
+            {linked ? "LINKED" : "LINK"}
+          </button>
           <button className="estop" onClick={stopAll}>
             STOP
           </button>
@@ -159,8 +178,8 @@ export function App() {
       </header>
 
       <main className="grid">
-        <GimbalPad camera={1} attitude={telemetry.gimbals["0"]} send={send} />
-        <GimbalPad camera={2} attitude={telemetry.gimbals["2"]} send={send} />
+        <GimbalPad camera={1} attitude={telemetry.gimbals["0"]} linked={linked} send={send} />
+        <GimbalPad camera={2} attitude={telemetry.gimbals["2"]} linked={linked} send={send} />
         <StreamsTable telemetry={telemetry} />
       </main>
     </div>

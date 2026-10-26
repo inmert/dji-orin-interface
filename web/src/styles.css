@@ -52,6 +52,21 @@ body {
 }
 .estop:active { transform: translateY(1px); }
 
+.link-toggle {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  cursor: pointer;
+}
+.link-toggle.on { background: var(--active); border-color: var(--accent); color: #fff; }
+.link-toggle:active { transform: translateY(1px); }
+
+.tag.link { background: #13314a; color: var(--accent); }
+
 .grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

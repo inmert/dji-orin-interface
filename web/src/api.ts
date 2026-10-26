@@ -31,6 +31,7 @@ export interface Telemetry {
 
 export type Command =
   | { cmd: "gimbal"; camera: number; pitch: number; yaw: number; active: boolean }
+  | { cmd: "link"; on: boolean }
   | { cmd: "stop" };
 
 export type Status = "connecting" | "open" | "closed";
