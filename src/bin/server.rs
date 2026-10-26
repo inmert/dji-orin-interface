@@ -44,6 +44,8 @@ const INJECT_HZ: u64 = 10;
 struct Commands {
     cam1: GimbalMove,
     cam2: GimbalMove,
+    /// When linked, a move for either camera drives BOTH (see [`apply_move`]).
+    linked: bool,
 }
 
 impl Commands {
@@ -53,10 +55,34 @@ impl Commands {
             Camera::Two => self.cam2 = mv,
         }
     }
+    /// Apply a move from the UI: when linked, both cameras get it; otherwise
+    /// only the named one.
+    fn apply_move(&mut self, cam: Camera, mv: GimbalMove) {
+        if self.linked {
+            self.cam1 = mv;
+            self.cam2 = mv;
+        } else {
+            self.set(cam, mv);
+        }
+    }
     fn release_all(&mut self) {
         self.cam1.active = false;
         self.cam2.active = false;
     }
+}
+
+// Snap controller (camera 2 → camera 1) — a bounded proportional loop over the
+// gimbal attitude telemetry. Provisional: the attitude decode is unverified, so
+// this is validated/tuned on hardware. Bounds (timeout + clamped step) keep it
+// safe even if the feedback is wrong.
+const SNAP_MAX_TICKS: u32 = 30; // ~3 s at INJECT_HZ
+const SNAP_GAIN: f32 = 0.5;
+const SNAP_MAX_STEP: i16 = 150;
+const SNAP_DONE: i16 = 10;
+
+/// Proportional, clamped correction for one axis error.
+fn snap_step(err: i16) -> i16 {
+    ((f32::from(err) * SNAP_GAIN) as i16).clamp(-SNAP_MAX_STEP, SNAP_MAX_STEP)
 }
 
 /// A command message from the UI.
@@ -73,6 +99,9 @@ enum WsCommand {
         #[serde(default)]
         active: bool,
     },
+    /// Link/unlink the cameras. Enabling snaps camera 2 toward camera 1 and then
+    /// drives both together.
+    Link { on: bool },
     /// Release every gimbal immediately.
     Stop,
 }
@@ -203,7 +232,37 @@ fn injector(ep2: OwnedFd, cmds: Shared) {
     }
 }
 
-fn handle_ws_command(text: &str, cmds: &Shared) {
+/// Drive camera 2 toward camera 1's reported attitude, then stop. Runs in its
+/// own thread while linked; bounded by SNAP_MAX_TICKS and a clamped step.
+fn snap_camera2_to_1(cmds: Shared, tele: Tele) {
+    logln!("link: snapping camera 2 to camera 1 (provisional attitude)");
+    for _ in 0..SNAP_MAX_TICKS {
+        if !cmds.lock().unwrap().linked {
+            break; // unlinked mid-snap
+        }
+        let (a1, a2) = {
+            let t = tele.lock().unwrap();
+            (t.gimbals.get(&0).cloned(), t.gimbals.get(&2).cloned())
+        };
+        let (Some(a1), Some(a2)) = (a1, a2) else {
+            logln!("link: no gimbal attitude yet; cannot snap");
+            break;
+        };
+        let (ep, ey) = (a1.pitch - a2.pitch, a1.yaw - a2.yaw);
+        if ep.abs() <= SNAP_DONE && ey.abs() <= SNAP_DONE {
+            break; // aligned
+        }
+        cmds.lock().unwrap().cam2 = GimbalMove {
+            pitch: snap_step(ep),
+            yaw: snap_step(ey),
+            active: true,
+        };
+        sleep(Duration::from_millis(1000 / INJECT_HZ));
+    }
+    cmds.lock().unwrap().cam2.active = false; // stop camera 2 after the snap
+}
+
+fn handle_ws_command(text: &str, cmds: &Shared, tele: &Tele) {
     match serde_json::from_str::<WsCommand>(text) {
         Ok(WsCommand::Gimbal {
             camera,
@@ -214,7 +273,15 @@ fn handle_ws_command(text: &str, cmds: &Shared) {
             if let Some(cam) = Camera::from_number(camera) {
                 cmds.lock()
                     .unwrap()
-                    .set(cam, GimbalMove { pitch, yaw, active });
+                    .apply_move(cam, GimbalMove { pitch, yaw, active });
+            }
+        }
+        Ok(WsCommand::Link { on }) => {
+            cmds.lock().unwrap().linked = on;
+            logln!("link: {}", if on { "on" } else { "off" });
+            if on {
+                let (cmds, tele) = (Arc::clone(cmds), Arc::clone(tele));
+                std::thread::spawn(move || snap_camera2_to_1(cmds, tele));
             }
         }
         Ok(WsCommand::Stop) => cmds.lock().unwrap().release_all(),
@@ -249,7 +316,7 @@ fn ws_client(stream: TcpStream, cmds: Shared, tele: Tele) {
             last_send = Instant::now();
         }
         match ws.read() {
-            Ok(Message::Text(t)) => handle_ws_command(t.as_str(), &cmds),
+            Ok(Message::Text(t)) => handle_ws_command(t.as_str(), &cmds, &tele),
             Ok(Message::Close(_)) => break,
             Ok(_) => {} // ping/pong/binary: ignore
             Err(tungstenite::Error::Io(e))
@@ -407,5 +474,49 @@ fn main() {
                 sleep(Duration::from_millis(50));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linked_move_drives_both_cameras() {
+        let mut c = Commands {
+            linked: true,
+            ..Default::default()
+        };
+        c.apply_move(
+            Camera::One,
+            GimbalMove {
+                pitch: 30,
+                yaw: -5,
+                active: true,
+            },
+        );
+        assert!(c.cam1.active && c.cam2.active);
+        assert_eq!((c.cam2.pitch, c.cam2.yaw), (30, -5));
+    }
+
+    #[test]
+    fn unlinked_move_drives_only_the_named_camera() {
+        let mut c = Commands::default();
+        c.apply_move(
+            Camera::Two,
+            GimbalMove {
+                pitch: 10,
+                yaw: 0,
+                active: true,
+            },
+        );
+        assert!(!c.cam1.active && c.cam2.active);
+    }
+
+    #[test]
+    fn snap_step_is_clamped() {
+        assert_eq!(snap_step(10_000), SNAP_MAX_STEP);
+        assert_eq!(snap_step(-10_000), -SNAP_MAX_STEP);
+        assert_eq!(snap_step(0), 0);
     }
 }
