@@ -1,0 +1,104 @@
+# Protocol notes
+
+## USB transport: Android Open Accessory (AOA)
+
+The DJI app connects to the Cendence controller over USB using Android Open
+Accessory. The **controller is the USB host**; the app device (phone/tablet, or
+our Orin) is the USB **peripheral**.
+
+Handshake, as captured from the real controller:
+
+1. Host → device, vendor control IN `bRequest=51` (`GET_PROTOCOL`), `wLength=2`.
+   Device replies a 2-byte little-endian protocol version (we reply `2`).
+2. Host → device, vendor control OUT `bRequest=52` (`SEND_STRING`) for string
+   indices 0..5. Captured values:
+
+   | idx | field        | value               |
+   |-----|--------------|---------------------|
+   | 0   | manufacturer | `DJI`               |
+   | 1   | model        | `T600`              |
+   | 2   | description  | `DJI Inspire 1`     |
+   | 3   | version      | `v1.0.2.6`          |
+   | 4   | uri          | `www.dji.com`       |
+   | 5   | serial       | `000000000000000`   |
+
+   `manufacturer=DJI, model=T600` is the identity DJI Pilot registers to handle.
+3. Host → device, vendor control OUT `bRequest=53` (`ACCESSORY_START`).
+4. The device (re-)enumerates in accessory mode: **VID `0x18d1`**, PID `0x2d00`
+   (accessory) or `0x2d01` (accessory + ADB), one vendor-specific interface with
+   two bulk endpoints.
+5. **DUML frames** flow over the two bulk endpoints.
+
+## DUML frame format
+
+Little-endian multi-byte fields. Total frame length is a 10-bit field.
+
+```
+off  size  field
+0    1     SOF, always 0x55
+1    1     length, low 8 bits
+2    1     bits[1:0] = length high bits; bits[7:2] = protocol version
+3    1     CRC-8 over bytes [0..2]            (header check)
+4    1     sender    (low 5 bits = device type, high 3 bits = index)
+5    1     receiver  (same encoding)
+6    2     sequence number
+8    1     command type / flags (ACK bit, encryption, ...)
+9    1     command set
+10   1     command id
+11   N     payload  (N = length - 13)
+..   2     CRC-16 over bytes [0 .. length-3]  (whole-frame check)
+```
+
+### Checksums (re-derived and verified against captured frames)
+
+- **Header CRC-8:** reflected, polynomial `0x31` (reflected `0x8C`), init `0x77`.
+- **Frame CRC-16:** reflected CRC-16/CCITT, polynomial `0x1021` (reflected
+  `0x8408`), init `0x3692`.
+
+Both are implemented in [`src/duml.rs`](../src/duml.rs) and checked by its unit
+tests (`cargo test`) against real captured frames.
+
+### Worked example
+
+A frame captured from DJI Pilot:
+
+```
+55 0d 04 33 02 2d 07 00 40 00 ff 34 7a
+│  │  │  │  │  │  └─┬─┘ │  │  │  └─┬─┘
+│  │  │  │  │  │   seq  │  │  │  CRC-16 (0x7a34)
+│  │  │  │  │  └ receiver 0x2d    │
+│  │  │  │  └ sender 0x02 (App)   └ cmd_id 0xff (broadcast)
+│  │  │  └ header CRC-8          cmd_set 0x00 (common)
+│  │  └ version 1               cmd_type 0x40
+│  └ length 13
+└ SOF
+```
+
+## Device types (low 5 bits of sender/receiver)
+
+| id  | device         |
+|-----|----------------|
+| 0x00| Any            |
+| 0x01| Camera         |
+| 0x02| App / DJI Pilot|
+| 0x03| Flight control |
+| 0x04| Gimbal         |
+| 0x05| Center board   |
+| 0x06| Remote radio   |
+| 0x07| WiFi           |
+| 0x08| DM36x video    |
+| 0x09| HD link        |
+| 0x0a| Battery        |
+| 0x0b| ESC            |
+
+Higher types seen in captures (e.g. `0x0e`, `0x1f`) are not all identified.
+
+## Observations
+
+- From the controller the Orin receives mostly ~716-byte high-entropy frames
+  (the **camera video downlink**) plus small heartbeat/telemetry frames; many
+  payloads are encrypted.
+- With **no aircraft present** behind the Orin, DJI Pilot only emits
+  `cmd_set=0x00 cmd_id=0x01` "get version" discovery polls to each module. Real
+  flight commands require Pilot to believe a full aircraft is connected — hence
+  the planned transparent bridge to the real drone.

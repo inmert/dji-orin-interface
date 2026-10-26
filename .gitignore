@@ -1,0 +1,17 @@
+# Rust build output
+/target/
+
+# Capture logs / sample data
+*.log
+captures/
+*.pcap
+
+# Editor / OS cruft
+*.swp
+*~
+.idea/
+.DS_Store
+
+# Keep shared VSCode config, ignore per-user settings
+.vscode/*
+!.vscode/tasks.json
