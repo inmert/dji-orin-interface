@@ -47,9 +47,13 @@ the specific interfaces each device exposes.
 
 ```
 Cargo.toml              Package manifest (no external dependencies)
-src/lib.rs              Crate root (re-exports duml + sys)
-src/duml.rs             DUML framing + the two DJI checksums + unit tests
-src/sys.rs              Dependency-free libc wrappers (RAII fds, usbfs ioctls)
+src/lib.rs              Crate root (module declarations)
+src/duml.rs             DUML framing, checksums, Decoder, build + unit tests
+src/aoa.rs              Android Open Accessory constants + DJI identity
+src/usbfs.rs            Host-side USB: device lookup, control/bulk transfers
+src/ffs.rs              Device-side FunctionFS: descriptors, ep0 events, setup
+src/sys.rs              Raw kernel ABI (libc calls + usbfs ioctl structs/codes)
+src/log.rs              Timestamped line logging shared by the binaries
 src/bin/ffs_capture.rs  Orin as the app toward the controller
 src/bin/aoa_capture.rs  Orin as the controller toward DJI Pilot
 scripts/run_capture.sh  Bring up the FunctionFS gadget + start ffs_capture
@@ -57,21 +61,22 @@ scripts/restore_gadget.sh  Tear it down, restore the stock USB gadget
 docs/                   Protocol and hardware notes
 ```
 
-The project is **Rust** (edition 2021) with **no external crates** — the USB and
+The project is **Rust** (edition 2024) with **no external crates** — the USB and
 gadget plumbing uses the system libc through a small set of hand-declared
 externs in `sys`, so it builds fully offline. The reusable protocol logic lives
-in the `duml` module (`parse`/`build`/`scan`, `Frame`, `ParseError`) so the
-gadget side, the host side, and any future command sender share one validated
-implementation of framing and checksums. File descriptors are owned by
-`std::os::fd::OwnedFd` (closed on drop); the gadget's bulk reader runs on a
-`std::thread`.
+in the `duml` module (`parse`/`scan`/`build`, the streaming `Decoder`, `Frame`,
+`ParseError`) so the gadget side, the host side, and any future command sender
+share one validated implementation of framing and checksums. Safe, typed USB
+wrappers (`usbfs`, `ffs`) keep raw pointers out of the binaries. File
+descriptors are owned by `std::os::fd::OwnedFd` (closed on drop); the gadget's
+bulk reader runs on a `std::thread`.
 
 ## Building
 
-**Toolchain:** Rust via `rustup` (developed with **rustc 1.99** on aarch64).
-Needs Linux kernel headers for the USB gadget/usbfs interfaces — on the Orin
-from `nvidia-l4t-kernel-headers`. If `cargo` isn't on your PATH:
-`export PATH="$HOME/.cargo/bin:$PATH"`.
+**Toolchain:** Rust via `rustup`, edition 2024 (needs **rustc 1.85+**;
+developed with 1.99 on aarch64). No external crates and no build-time kernel
+headers — the usbfs/gadget ABI is declared in `sys`. If `cargo` isn't on your
+PATH: `export PATH="$HOME/.cargo/bin:$PATH"`.
 
 ```bash
 cargo build --release   # binaries in target/release/{ffs_capture,aoa_capture}

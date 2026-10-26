@@ -98,6 +98,11 @@ Higher types seen in captures (e.g. `0x0e`, `0x1f`) are not all identified.
 - From the controller the Orin receives mostly ~716-byte high-entropy frames
   (the **camera video downlink**) plus small heartbeat/telemetry frames; many
   payloads are encrypted.
+- `duml::parse` checks the header CRC-8 before trusting the 10-bit length, so a
+  stray `0x55` in the encrypted/video bytes is rejected in one byte rather than
+  skipping up to a kilobyte of real frames. Filter to `hdr_crc_ok && crc_ok`
+  for genuine DUML; for a live stream use `duml::Decoder`, which reassembles
+  frames that straddle USB read boundaries.
 - With **no aircraft present** behind the Orin, DJI Pilot only emits
   `cmd_set=0x00 cmd_id=0x01` "get version" discovery polls to each module. Real
   flight commands require Pilot to believe a full aircraft is connected — hence

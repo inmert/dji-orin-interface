@@ -18,6 +18,8 @@
 //! ..   2     CRC-16 over bytes [0 .. length-3]  (whole-frame check)
 //! ```
 
+use std::fmt;
+
 pub const SOF: u8 = 0x55;
 pub const HEADER_LEN: usize = 4; // SOF + len(2) + hdr CRC-8
 pub const OVERHEAD: usize = 13; // header(4) + routing/cmd(7) + CRC-16(2)
@@ -41,13 +43,79 @@ pub enum Device {
     Esc = 0x0B,
 }
 
+impl Device {
+    /// Display name of a device type, or `None` for an unknown id.
+    pub fn name(self) -> &'static str {
+        DEVICE_NAMES[self as usize]
+    }
+}
+
+const DEVICE_NAMES: [&str; 12] = [
+    "Any",
+    "Camera",
+    "App",
+    "FlightCtrl",
+    "Gimbal",
+    "CenterBoard",
+    "Remote",
+    "WiFi",
+    "DM36x",
+    "HDLink",
+    "Battery",
+    "ESC",
+];
+
+impl TryFrom<u8> for Device {
+    type Error = u8;
+
+    /// Interpret the device-type field (low 5 bits only); the index bits are
+    /// ignored. Returns the unknown value as the error.
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Ok(match value & 0x1F {
+            0x00 => Device::Any,
+            0x01 => Device::Camera,
+            0x02 => Device::App,
+            0x03 => Device::FlightCtrl,
+            0x04 => Device::Gimbal,
+            0x05 => Device::CenterBoard,
+            0x06 => Device::Remote,
+            0x07 => Device::WiFi,
+            0x08 => Device::Dm36x,
+            0x09 => Device::HdLink,
+            0x0A => Device::Battery,
+            0x0B => Device::Esc,
+            other => return Err(other),
+        })
+    }
+}
+
+/// Display wrapper for a sender/receiver byte, e.g. `App[0]` or `type0x1f[0]`.
+#[derive(Debug, Clone, Copy)]
+pub struct DevName(pub u8);
+
+impl fmt::Display for DevName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ty = (self.0 & 0x1F) as usize;
+        let idx = self.0 >> 5;
+        if ty < DEVICE_NAMES.len() {
+            write!(f, "{}[{idx}]", DEVICE_NAMES[ty])
+        } else {
+            write!(f, "type{:#04x}[{idx}]", self.0 & 0x1F)
+        }
+    }
+}
+
 /// DJI header checksum: CRC-8, reflected poly 0x31, init 0x77.
 pub fn crc8(data: &[u8]) -> u8 {
     let mut crc: u8 = 0x77;
     for &b in data {
         crc ^= b;
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0x8C } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0x8C
+            } else {
+                crc >> 1
+            };
         }
     }
     crc
@@ -57,30 +125,22 @@ pub fn crc8(data: &[u8]) -> u8 {
 pub fn crc16(data: &[u8]) -> u16 {
     let mut crc: u16 = 0x3692;
     for &b in data {
-        crc ^= b as u16;
+        crc ^= u16::from(b);
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0x8408 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0x8408
+            } else {
+                crc >> 1
+            };
         }
     }
     crc
 }
 
-/// Human-readable name for a sender/receiver byte, e.g. `"App[0]"`.
-pub fn dev_name(id: u8) -> String {
-    const NAMES: [&str; 12] = [
-        "Any", "Camera", "App", "FlightCtrl", "Gimbal", "CenterBoard", "Remote", "WiFi", "DM36x",
-        "HDLink", "Battery", "ESC",
-    ];
-    let ty = (id & 0x1F) as usize;
-    let idx = id >> 5;
-    if ty < NAMES.len() {
-        format!("{}[{}]", NAMES[ty], idx)
-    } else {
-        format!("type{:#04x}[{}]", id & 0x1F, idx)
-    }
-}
-
 /// A parsed DUML frame. `payload` borrows from the buffer passed to [`parse`].
+///
+/// [`parse`] only returns a frame whose header CRC is valid, so `hdr_crc_ok` is
+/// always `true` here; the field is kept for callers that persist frames.
 #[derive(Debug, Clone)]
 pub struct Frame<'a> {
     pub length: u16,
@@ -96,18 +156,22 @@ pub struct Frame<'a> {
     pub crc_ok: bool,
 }
 
-impl Frame<'_> {
-    /// One-line human description.
-    pub fn describe(&self) -> String {
-        format!(
+impl fmt::Display for Frame<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
             "{:<14} -> {:<14} seq={:<5} set={:#04x} id={:#04x} len={}{}{}",
-            dev_name(self.sender),
-            dev_name(self.receiver),
+            DevName(self.sender).to_string(),
+            DevName(self.receiver).to_string(),
             self.seq,
             self.cmd_set,
             self.cmd_id,
             self.payload.len(),
-            if self.hdr_crc_ok { "" } else { " [BAD HDR CRC]" },
+            if self.hdr_crc_ok {
+                ""
+            } else {
+                " [BAD HDR CRC]"
+            },
             if self.crc_ok { "" } else { " [BAD CRC]" },
         )
     }
@@ -118,12 +182,17 @@ impl Frame<'_> {
 pub enum ParseError {
     /// The buffer holds a valid-looking but truncated frame; read more bytes.
     NeedMore,
-    /// `buf[0]` is not a plausible frame start, or the length field is bogus.
+    /// `buf[0]` is not a plausible frame start: not a SOF, a failed header CRC,
+    /// or a bogus length field.
     Invalid,
 }
 
 /// Parse one frame at the start of `buf`. On success returns the frame and the
 /// number of bytes it consumed (its length).
+///
+/// The header CRC-8 is checked *before* the length field is trusted, so a stray
+/// `0x55` in video/encrypted data is rejected as [`ParseError::Invalid`] (one
+/// byte to resync) instead of skipping up to `MAX_LEN` bytes of real frames.
 pub fn parse(buf: &[u8]) -> Result<(Frame<'_>, usize), ParseError> {
     if buf.is_empty() {
         return Err(ParseError::NeedMore);
@@ -133,6 +202,10 @@ pub fn parse(buf: &[u8]) -> Result<(Frame<'_>, usize), ParseError> {
     }
     if buf.len() < HEADER_LEN {
         return Err(ParseError::NeedMore);
+    }
+    // Validate the header CRC before believing the length field.
+    if crc8(&buf[0..3]) != buf[3] {
+        return Err(ParseError::Invalid);
     }
     let length = (buf[1] as usize) | (((buf[2] & 0x03) as usize) << 8);
     let version = buf[2] >> 2;
@@ -155,7 +228,7 @@ pub fn parse(buf: &[u8]) -> Result<(Frame<'_>, usize), ParseError> {
             cmd_set: buf[9],
             cmd_id: buf[10],
             payload: &buf[11..11 + plen],
-            hdr_crc_ok: crc8(&buf[0..3]) == buf[3],
+            hdr_crc_ok: true,
             crc_ok: crc16(&buf[0..length - 2]) == want,
         },
         length,
@@ -163,7 +236,8 @@ pub fn parse(buf: &[u8]) -> Result<(Frame<'_>, usize), ParseError> {
 }
 
 /// Scan a buffer for frames (resynchronising on `0x55`), calling `cb` per frame.
-/// Returns the number of frames reported.
+/// Returns the number of frames reported. For a live stream split across reads,
+/// use [`Decoder`] instead, which reassembles frames across buffer boundaries.
 pub fn scan(buf: &[u8], mut cb: impl FnMut(&Frame)) -> usize {
     let mut i = 0;
     let mut found = 0;
@@ -185,38 +259,108 @@ pub fn scan(buf: &[u8], mut cb: impl FnMut(&Frame)) -> usize {
     found
 }
 
-/// Build a complete frame (fills length/version header and both checksums).
-/// Returns an empty vector if the payload is too large for the 10-bit length.
-pub fn build(
-    sender: u8,
-    receiver: u8,
-    seq: u16,
-    cmd_type: u8,
-    cmd_set: u8,
-    cmd_id: u8,
-    payload: &[u8],
-) -> Vec<u8> {
+/// A streaming DUML reassembler: feed it whatever bytes each USB read yields,
+/// and it emits complete frames even when one frame spans several reads.
+#[derive(Debug, Default)]
+pub struct Decoder {
+    buf: Vec<u8>,
+}
+
+impl Decoder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append freshly-read bytes to the internal buffer.
+    pub fn push(&mut self, data: &[u8]) {
+        self.buf.extend_from_slice(data);
+    }
+
+    /// Emit every complete frame currently buffered, calling `cb` for each, and
+    /// discard the bytes they (and any resync junk) consumed. A trailing
+    /// incomplete frame is retained for the next [`push`](Self::push); because
+    /// [`parse`] validates the header CRC first, that retained tail is at most
+    /// `MAX_LEN` bytes. Returns the number of frames emitted.
+    pub fn drain(&mut self, mut cb: impl FnMut(&Frame)) -> usize {
+        let mut i = 0;
+        let mut found = 0;
+        while i < self.buf.len() {
+            if self.buf[i] != SOF {
+                i += 1;
+                continue;
+            }
+            match parse(&self.buf[i..]) {
+                Ok((f, n)) => {
+                    cb(&f);
+                    found += 1;
+                    i += n;
+                }
+                Err(ParseError::NeedMore) => break,
+                Err(ParseError::Invalid) => i += 1,
+            }
+        }
+        self.buf.drain(0..i);
+        found
+    }
+
+    /// Bytes currently buffered (a partial frame awaiting more data).
+    pub fn buffered(&self) -> usize {
+        self.buf.len()
+    }
+}
+
+/// Routing and command header for [`build`].
+#[derive(Debug, Clone, Copy)]
+pub struct Header {
+    pub sender: u8,
+    pub receiver: u8,
+    pub seq: u16,
+    pub cmd_type: u8,
+    pub cmd_set: u8,
+    pub cmd_id: u8,
+}
+
+/// Why [`build`] could not produce a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildError {
+    /// Payload too large for the 10-bit length field.
+    PayloadTooLong,
+}
+
+impl fmt::Display for BuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BuildError::PayloadTooLong => f.write_str("payload too long for 10-bit DUML length"),
+        }
+    }
+}
+
+impl std::error::Error for BuildError {}
+
+/// Build a complete frame (fills length/version header and both checksums,
+/// protocol version 1).
+pub fn build(h: &Header, payload: &[u8]) -> Result<Vec<u8>, BuildError> {
     let length = OVERHEAD + payload.len();
     if length > MAX_LEN {
-        return Vec::new();
+        return Err(BuildError::PayloadTooLong);
     }
     let mut out = vec![0u8; length];
     out[0] = SOF;
     out[1] = (length & 0xFF) as u8;
     out[2] = (((length >> 8) & 0x03) | (1 << 2)) as u8; // version 1
     out[3] = crc8(&out[0..3]);
-    out[4] = sender;
-    out[5] = receiver;
-    out[6] = (seq & 0xFF) as u8;
-    out[7] = (seq >> 8) as u8;
-    out[8] = cmd_type;
-    out[9] = cmd_set;
-    out[10] = cmd_id;
+    out[4] = h.sender;
+    out[5] = h.receiver;
+    out[6] = (h.seq & 0xFF) as u8;
+    out[7] = (h.seq >> 8) as u8;
+    out[8] = h.cmd_type;
+    out[9] = h.cmd_set;
+    out[10] = h.cmd_id;
     out[11..11 + payload.len()].copy_from_slice(payload);
     let crc = crc16(&out[0..length - 2]);
     out[length - 2] = (crc & 0xFF) as u8;
     out[length - 1] = (crc >> 8) as u8;
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -224,9 +368,15 @@ mod tests {
     use super::*;
 
     // Frames captured 2026-10-26 from DJI Pilot (app -> modules), full with CRCs.
-    const F1: [u8; 13] = [0x55, 0x0d, 0x04, 0x33, 0x02, 0x2d, 0x07, 0x00, 0x40, 0x00, 0xff, 0x34, 0x7a];
-    const F2: [u8; 13] = [0x55, 0x0d, 0x04, 0x33, 0x02, 0x0e, 0x08, 0x00, 0x40, 0x00, 0x01, 0x24, 0x87];
-    const F3: [u8; 13] = [0x55, 0x0d, 0x04, 0x33, 0x02, 0x00, 0x0b, 0x00, 0x40, 0x00, 0x01, 0x4a, 0xa3];
+    const F1: [u8; 13] = [
+        0x55, 0x0d, 0x04, 0x33, 0x02, 0x2d, 0x07, 0x00, 0x40, 0x00, 0xff, 0x34, 0x7a,
+    ];
+    const F2: [u8; 13] = [
+        0x55, 0x0d, 0x04, 0x33, 0x02, 0x0e, 0x08, 0x00, 0x40, 0x00, 0x01, 0x24, 0x87,
+    ];
+    const F3: [u8; 13] = [
+        0x55, 0x0d, 0x04, 0x33, 0x02, 0x00, 0x0b, 0x00, 0x40, 0x00, 0x01, 0x4a, 0xa3,
+    ];
 
     fn trailer(f: &[u8]) -> u16 {
         u16::from_le_bytes([f[f.len() - 2], f[f.len() - 1]])
@@ -257,12 +407,79 @@ mod tests {
 
     #[test]
     fn parse_status_codes() {
-        assert_eq!(parse(&[0x11, 0x22, 0x33]).map(|_| ()), Err(ParseError::Invalid));
+        assert_eq!(
+            parse(&[0x11, 0x22, 0x33]).map(|_| ()),
+            Err(ParseError::Invalid)
+        );
         assert_eq!(parse(&F2[0..6]).map(|_| ()), Err(ParseError::NeedMore));
     }
 
     #[test]
+    fn rejects_bad_header_crc() {
+        // A stray 0x55 with a plausible length but a wrong header CRC.
+        let junk = [0x55, 0x40, 0x04, 0x00, 0xAA, 0xBB];
+        assert_eq!(parse(&junk).map(|_| ()), Err(ParseError::Invalid));
+    }
+
+    #[test]
+    fn scan_skips_false_sof_and_still_finds_the_real_frame() {
+        // A bad-header-CRC 0x55 immediately before a valid frame: the old
+        // length-trusting parser skipped the real frame; now it is found.
+        let mut buf = vec![0x55, 0x40, 0x04, 0x00, 0xAA, 0xBB];
+        buf.extend_from_slice(&F2);
+        let mut valid = 0;
+        scan(&buf, |f| {
+            if f.hdr_crc_ok && f.crc_ok {
+                valid += 1;
+            }
+        });
+        assert_eq!(valid, 1);
+    }
+
+    #[test]
+    fn decoder_reassembles_a_split_frame() {
+        let (a, b) = F2.split_at(7);
+        let mut d = Decoder::new();
+        let mut found = 0;
+        d.push(a);
+        found += d.drain(|_| {});
+        assert_eq!(found, 0);
+        assert_eq!(d.buffered(), a.len());
+        d.push(b);
+        found += d.drain(|f| assert!(f.crc_ok));
+        assert_eq!(found, 1);
+        assert_eq!(d.buffered(), 0);
+    }
+
+    #[test]
     fn build_round_trips_captured_frame() {
-        assert_eq!(build(0x02, 0x0e, 0x0008, 0x40, 0x00, 0x01, &[]), F2.to_vec());
+        let h = Header {
+            sender: 0x02,
+            receiver: 0x0e,
+            seq: 0x0008,
+            cmd_type: 0x40,
+            cmd_set: 0x00,
+            cmd_id: 0x01,
+        };
+        assert_eq!(build(&h, &[]).unwrap(), F2.to_vec());
+    }
+
+    #[test]
+    fn build_rejects_oversized_payload() {
+        let h = Header {
+            sender: 0,
+            receiver: 0,
+            seq: 0,
+            cmd_type: 0,
+            cmd_set: 0,
+            cmd_id: 0,
+        };
+        assert_eq!(build(&h, &[0u8; MAX_LEN]), Err(BuildError::PayloadTooLong));
+    }
+
+    #[test]
+    fn device_try_from_round_trips() {
+        assert_eq!(Device::try_from(0x43), Ok(Device::FlightCtrl)); // index bits ignored
+        assert_eq!(Device::try_from(0x1F), Err(0x1F));
     }
 }
