@@ -46,9 +46,11 @@ the specific interfaces each device exposes.
 ## Repository layout
 
 ```
-Cargo.toml              Package manifest (no external dependencies)
+Cargo.toml              Package manifest (web-server deps; core stays dep-free)
 src/lib.rs              Library root (module declarations)
 src/duml.rs             DUML framing, checksums, Decoder, build + unit tests
+src/control.rs          Building DUML frames we inject (gimbal move) + tests
+src/telemetry.rs        Serializable link snapshot for the web UI + tests
 src/aoa.rs              Android Open Accessory constants + DJI identity
 src/log.rs              Timestamped line logging shared by the binaries
 src/usb.rs              USB transport submodule root
@@ -58,18 +60,24 @@ src/usb/ffs.rs          Device-side FunctionFS: descriptors, ep0 events, setup
 src/bin/ffs_capture.rs  Orin as the app toward the controller
 src/bin/aoa_capture.rs  Orin as the controller toward DJI Pilot
 src/bin/bridge.rs       Transparent DUML MITM (both roles at once)
+src/bin/server.rs       Orin as the app + web UI (telemetry + gimbal control)
+web/                    Vite + React + TypeScript front end (built to web/dist)
 tests/duml_roundtrip.rs Black-box integration tests of the public DUML API
 examples/decode_frames.rs  Minimal Decoder usage example
 benches/duml_bench.rs   CRC/scan micro-benchmark (no external harness)
 scripts/run_capture.sh  Bring up the FunctionFS gadget + start ffs_capture
 scripts/run_bridge.sh   Bring up the gadget + start the MITM bridge
+scripts/run_server.sh   Bring up the gadget + start the web control server
 scripts/restore_gadget.sh  Tear it down, restore the stock USB gadget
 docs/                   Protocol and hardware notes
 ```
 
-The project is **Rust** (edition 2024) with **no external crates** — the USB and
-gadget plumbing uses the system libc through a small set of hand-declared
-externs in `usb::sys`, so it builds fully offline. The reusable protocol logic
+The project is **Rust** (edition 2024). The **core is dependency-free** — the USB
+and gadget plumbing uses the system libc through a small set of hand-declared
+externs in `usb::sys`, and `duml`/`control`/`telemetry` add nothing. Only the
+web `server` binary pulls crates (`tiny_http`, `tungstenite`, `serde`/
+`serde_json`); the capture/bridge tools and the library still build offline. The
+reusable protocol logic
 lives in the `duml` module (`parse`/`scan`/`build`, the streaming `Decoder`,
 `Frame`, `ParseError`) so the gadget side, the host side, and any future command
 sender share one validated implementation of framing and checksums. Safe, typed
@@ -81,9 +89,11 @@ bulk reader runs on a `std::thread`.
 ## Building
 
 **Toolchain:** Rust via `rustup`, edition 2024 (needs **rustc 1.85+**;
-developed with 1.99 on aarch64). No external crates and no build-time kernel
-headers — the usbfs/gadget ABI is declared in `sys`. If `cargo` isn't on your
-PATH: `export PATH="$HOME/.cargo/bin:$PATH"`.
+developed with 1.99 on aarch64). No build-time kernel headers — the usbfs/gadget
+ABI is declared in `sys`. If `cargo` isn't on your PATH:
+`export PATH="$HOME/.cargo/bin:$PATH"`. The web UI additionally needs Node
+(developed with Node 24 / npm 11) to build, and a few small crates are fetched
+for the `server` binary.
 
 ```bash
 cargo build --release   # binaries in target/release/{ffs_capture,aoa_capture}
@@ -139,13 +149,39 @@ sudo scripts/run_bridge.sh             # logs to bridge.log
 sudo scripts/restore_gadget.sh         # when done
 ```
 
+**Web control server** (no tablet): the Orin is the app toward the RC and serves
+a browser UI — live telemetry and **gimbal control for both cameras**. The
+gimbal move command is injected onto the RC; the two cameras are gimbal device
+index 0 and 2 (see [docs/protocol.md](docs/protocol.md)).
+
+> ⚠️ The UI's gimbal buttons move the real camera mount via the **powered**
+> aircraft. Nothing is injected until you press a control, and the on-screen
+> **STOP** or closing the browser releases every gimbal. Run with **propellers
+> removed / aircraft secured** until the control is calibrated.
+
+```bash
+cargo build --release
+(cd web && npm install && npm run build)   # build the React UI into web/dist
+# connect the RC on USB-C, then:
+sudo scripts/run_server.sh                 # logs to server.log
+# open http://<orin-ip>:8080/ on a device on the same network
+sudo scripts/restore_gadget.sh             # when done
+```
+
+Live video (the two camera feeds) is a separate research spike: the downlink is
+DJI's encrypted/encoded stream, so the UI shows a placeholder for now.
+
 ## Status
 
 - [x] USB transport identified (AOA; controller is the USB host)
 - [x] AOA handshake implemented both directions (device and host)
 - [x] DUML framing + checksums implemented and validated against captures
 - [x] Receive & decode DUML from the controller and from DJI Pilot
-- [x] Transparent MITM bridge — passthrough + logging (not yet hardware-tested)
+- [x] Transparent MITM bridge — passthrough + logging (hardware-tested)
+- [x] Gimbal control command decoded (cmd_set 0x04/0x0c, both cameras)
+- [x] Web UI — telemetry + gimbal control, over a native Rust server
+- [x] Inject/calibrate gimbal control on hardware — working, both cameras (props off)
+- [ ] Live camera video in the UI (encrypted downlink — research spike)
 - [ ] Send/inject flight commands to the aircraft
 
 ## Acknowledgements

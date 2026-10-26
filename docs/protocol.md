@@ -93,6 +93,36 @@ A frame captured from DJI Pilot:
 
 Higher types seen in captures (e.g. `0x0e`, `0x1f`) are not all identified.
 
+## Command injection: gimbal control
+
+Decoded from captured DJI Pilot traffic and implemented in
+[`src/control.rs`](../src/control.rs).
+
+- **Move command:** `cmd_set = 0x04` (Gimbal), `cmd_id = 0x0c`, sender App
+  (`0x02`), receiver Gimbal, `cmd_type = 0x00`. 7-byte payload, little-endian
+  (field order **confirmed on hardware** — pitch/yaw are transposed from the
+  first guess):
+
+  | bytes | field | notes |
+  |-------|-------|-------|
+  | `[0:2]` | yaw   (int16) | pan; signed |
+  | `[2:4]` | roll  (int16) | always 0 — the app does not drive roll |
+  | `[4:6]` | pitch (int16) | tilt; signed |
+  | `[6]`   | flag  (u8)    | `0x80` active, `0x00` release (all-zero = stop) |
+
+  Sent at ~10 Hz while moving. Verified live: `cmd_type = 0x00` is accepted and
+  the gimbal moves; up/down tilt and left/right pan with the signs as sent.
+- **The two cameras are the gimbal device index** (high 3 bits of the receiver
+  byte): camera 1 = index 0 (receiver `0x04`), camera 2 = index 2 (`0x44`). A
+  single DJI Pilot instance only drives one gimbal at a time; our server
+  addresses each independently.
+- `control::cmd_type()` defaults to `0x00` (verified) and can be overridden at
+  runtime with `GIMBAL_CMD_TYPE`. Whether the values are a driven setpoint or a
+  speed is not yet characterized, but the UI's hold-to-move at a fixed magnitude
+  works well in practice.
+- Also seen: `cmd_set=0x04 cmd_id=0x10` (1-byte mode/recenter enum, sent to both
+  gimbals) and the attitude report `cmd_set=0x04 cmd_id=0x05` the gimbals push up.
+
 ## Observations
 
 - From the controller the Orin receives mostly ~716-byte high-entropy frames
