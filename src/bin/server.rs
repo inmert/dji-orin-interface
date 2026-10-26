@@ -19,7 +19,7 @@
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::net::{TcpListener, TcpStream};
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
@@ -28,7 +28,9 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use tungstenite::Message;
 
-use dji_orin_interface::control::{Camera, GimbalMove, gimbal_move_frame};
+use dji_orin_interface::control::{
+    Camera, GimbalMove, gimbal_lock_frame, gimbal_lock_release_aux_frame, gimbal_move_frame,
+};
 use dji_orin_interface::telemetry::Telemetry;
 use dji_orin_interface::usb::ffs::{self, Event, Setup};
 use dji_orin_interface::usb::sys;
@@ -44,8 +46,12 @@ const INJECT_HZ: u64 = 10;
 struct Commands {
     cam1: GimbalMove,
     cam2: GimbalMove,
-    /// When linked, a move for either camera drives BOTH (see [`apply_move`]).
+    /// When linked, the aircraft's native camera-lock is engaged: we drive only
+    /// camera 1 (the master) and the drone mirrors camera 2 (see [`apply_move`]).
     linked: bool,
+    /// A pending lock change for the injector to emit once: `Some(true)` engages
+    /// the lock, `Some(false)` releases it.
+    lock_pending: Option<bool>,
 }
 
 impl Commands {
@@ -55,12 +61,12 @@ impl Commands {
             Camera::Two => self.cam2 = mv,
         }
     }
-    /// Apply a move from the UI: when linked, both cameras get it; otherwise
-    /// only the named one.
+    /// Apply a move from the UI. When linked, everything drives camera 1 (the
+    /// master); the aircraft moves camera 2 to follow, so we never send camera 2
+    /// directly. Otherwise only the named camera moves.
     fn apply_move(&mut self, cam: Camera, mv: GimbalMove) {
         if self.linked {
             self.cam1 = mv;
-            self.cam2 = mv;
         } else {
             self.set(cam, mv);
         }
@@ -69,20 +75,15 @@ impl Commands {
         self.cam1.active = false;
         self.cam2.active = false;
     }
-}
-
-// Snap controller (camera 2 → camera 1) — a bounded proportional loop over the
-// gimbal attitude telemetry. Provisional: the attitude decode is unverified, so
-// this is validated/tuned on hardware. Bounds (timeout + clamped step) keep it
-// safe even if the feedback is wrong.
-const SNAP_MAX_TICKS: u32 = 30; // ~3 s at INJECT_HZ
-const SNAP_GAIN: f32 = 0.5;
-const SNAP_MAX_STEP: i16 = 150;
-const SNAP_DONE: i16 = 10;
-
-/// Proportional, clamped correction for one axis error.
-fn snap_step(err: i16) -> i16 {
-    ((f32::from(err) * SNAP_GAIN) as i16).clamp(-SNAP_MAX_STEP, SNAP_MAX_STEP)
+    /// Enter/leave linked mode: queue the native lock command and, when linking,
+    /// stop driving camera 2 directly (the drone takes it over).
+    fn set_linked(&mut self, on: bool) {
+        self.linked = on;
+        self.lock_pending = Some(on);
+        if on {
+            self.cam2.active = false;
+        }
+    }
 }
 
 /// A command message from the UI.
@@ -192,11 +193,44 @@ fn telemetry_reader(ep1: OwnedFd, tele: Tele) {
 /// Stream gimbal commands to ep2 (IN, Orin → RC) at a fixed rate. Sends a move
 /// frame per active camera each tick, and a single release frame when a camera
 /// transitions from active to released.
+/// Write one frame to ep2. Returns false if the endpoint is gone (fatal — the
+/// injector should stop); transient errors are ignored.
+fn write_ep2(ep2: BorrowedFd<'_>, frame: &[u8]) -> bool {
+    if let Err(e) = sys::write(ep2, frame) {
+        let code = e.raw_os_error().unwrap_or(0);
+        if code == sys::errno::ENODEV || code == sys::errno::ESHUTDOWN {
+            logln!("injector: ep2 gone; stopping");
+            return false;
+        }
+    }
+    true
+}
+
 fn injector(ep2: OwnedFd, cmds: Shared) {
     let period = Duration::from_millis(1000 / INJECT_HZ);
     let mut seq: u16 = 0;
     let mut was_active = [false; 2];
     loop {
+        // Emit a pending camera-lock change once (native dual-gimbal follow).
+        let lock = cmds.lock().unwrap().lock_pending.take();
+        if let Some(on) = lock {
+            if !write_ep2(ep2.as_fd(), &gimbal_lock_frame(on, seq)) {
+                return;
+            }
+            seq = seq.wrapping_add(1);
+            if !on {
+                // Pilot pairs the release with the 0x05 companion command.
+                if !write_ep2(ep2.as_fd(), &gimbal_lock_release_aux_frame(seq)) {
+                    return;
+                }
+                seq = seq.wrapping_add(1);
+            }
+            logln!(
+                "injector: camera lock {}",
+                if on { "engaged" } else { "released" }
+            );
+        }
+
         let (c1, c2) = {
             let c = cmds.lock().unwrap();
             (c.cam1, c.cam2)
@@ -216,15 +250,10 @@ fn injector(ep2: OwnedFd, cmds: Shared) {
                 None
             };
             if let Some(m) = send {
-                let frame = gimbal_move_frame(cam, m, seq);
-                seq = seq.wrapping_add(1);
-                if let Err(e) = sys::write(ep2.as_fd(), &frame) {
-                    let code = e.raw_os_error().unwrap_or(0);
-                    if code == sys::errno::ENODEV || code == sys::errno::ESHUTDOWN {
-                        logln!("injector: ep2 gone; stopping");
-                        return;
-                    }
+                if !write_ep2(ep2.as_fd(), &gimbal_move_frame(cam, m, seq)) {
+                    return;
                 }
+                seq = seq.wrapping_add(1);
             }
             was_active[slot] = mv.active;
         }
@@ -232,37 +261,7 @@ fn injector(ep2: OwnedFd, cmds: Shared) {
     }
 }
 
-/// Drive camera 2 toward camera 1's reported attitude, then stop. Runs in its
-/// own thread while linked; bounded by SNAP_MAX_TICKS and a clamped step.
-fn snap_camera2_to_1(cmds: Shared, tele: Tele) {
-    logln!("link: snapping camera 2 to camera 1 (provisional attitude)");
-    for _ in 0..SNAP_MAX_TICKS {
-        if !cmds.lock().unwrap().linked {
-            break; // unlinked mid-snap
-        }
-        let (a1, a2) = {
-            let t = tele.lock().unwrap();
-            (t.gimbals.get(&0).cloned(), t.gimbals.get(&2).cloned())
-        };
-        let (Some(a1), Some(a2)) = (a1, a2) else {
-            logln!("link: no gimbal attitude yet; cannot snap");
-            break;
-        };
-        let (ep, ey) = (a1.pitch - a2.pitch, a1.yaw - a2.yaw);
-        if ep.abs() <= SNAP_DONE && ey.abs() <= SNAP_DONE {
-            break; // aligned
-        }
-        cmds.lock().unwrap().cam2 = GimbalMove {
-            pitch: snap_step(ep),
-            yaw: snap_step(ey),
-            active: true,
-        };
-        sleep(Duration::from_millis(1000 / INJECT_HZ));
-    }
-    cmds.lock().unwrap().cam2.active = false; // stop camera 2 after the snap
-}
-
-fn handle_ws_command(text: &str, cmds: &Shared, tele: &Tele) {
+fn handle_ws_command(text: &str, cmds: &Shared) {
     match serde_json::from_str::<WsCommand>(text) {
         Ok(WsCommand::Gimbal {
             camera,
@@ -277,12 +276,8 @@ fn handle_ws_command(text: &str, cmds: &Shared, tele: &Tele) {
             }
         }
         Ok(WsCommand::Link { on }) => {
-            cmds.lock().unwrap().linked = on;
+            cmds.lock().unwrap().set_linked(on);
             logln!("link: {}", if on { "on" } else { "off" });
-            if on {
-                let (cmds, tele) = (Arc::clone(cmds), Arc::clone(tele));
-                std::thread::spawn(move || snap_camera2_to_1(cmds, tele));
-            }
         }
         Ok(WsCommand::Stop) => cmds.lock().unwrap().release_all(),
         Err(e) => logln!("ws: bad command: {e}"),
@@ -316,7 +311,7 @@ fn ws_client(stream: TcpStream, cmds: Shared, tele: Tele) {
             last_send = Instant::now();
         }
         match ws.read() {
-            Ok(Message::Text(t)) => handle_ws_command(t.as_str(), &cmds, &tele),
+            Ok(Message::Text(t)) => handle_ws_command(t.as_str(), &cmds),
             Ok(Message::Close(_)) => break,
             Ok(_) => {} // ping/pong/binary: ignore
             Err(tungstenite::Error::Io(e))
@@ -482,21 +477,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn linked_move_drives_both_cameras() {
-        let mut c = Commands {
-            linked: true,
-            ..Default::default()
-        };
+    fn linked_drives_only_the_master_and_queues_the_lock() {
+        let mut c = Commands::default();
+        c.set_linked(true);
+        assert!(c.linked);
+        assert_eq!(c.lock_pending, Some(true)); // injector will engage the lock
+        // A move while linked drives camera 1 only; the drone follows camera 2.
         c.apply_move(
-            Camera::One,
+            Camera::Two,
             GimbalMove {
                 pitch: 30,
                 yaw: -5,
                 active: true,
             },
         );
-        assert!(c.cam1.active && c.cam2.active);
-        assert_eq!((c.cam2.pitch, c.cam2.yaw), (30, -5));
+        assert!(c.cam1.active);
+        assert!(!c.cam2.active);
+        assert_eq!((c.cam1.pitch, c.cam1.yaw), (30, -5));
+    }
+
+    #[test]
+    fn unlinking_queues_the_release() {
+        let mut c = Commands::default();
+        c.set_linked(true);
+        c.set_linked(false);
+        assert!(!c.linked);
+        assert_eq!(c.lock_pending, Some(false));
     }
 
     #[test]
@@ -511,12 +517,5 @@ mod tests {
             },
         );
         assert!(!c.cam1.active && c.cam2.active);
-    }
-
-    #[test]
-    fn snap_step_is_clamped() {
-        assert_eq!(snap_step(10_000), SNAP_MAX_STEP);
-        assert_eq!(snap_step(-10_000), -SNAP_MAX_STEP);
-        assert_eq!(snap_step(0), 0);
     }
 }
