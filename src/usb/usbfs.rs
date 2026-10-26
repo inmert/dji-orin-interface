@@ -2,7 +2,7 @@
 //! device lookup via sysfs, control and bulk transfers, interface claiming,
 //! and endpoint discovery. No raw pointers cross this module's API.
 
-use crate::sys;
+use super::sys;
 use core::ffi::c_void;
 use std::fs;
 use std::io;

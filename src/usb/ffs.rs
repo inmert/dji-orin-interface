@@ -5,7 +5,7 @@
 use std::io;
 use std::os::fd::BorrowedFd;
 
-use crate::sys;
+use super::sys;
 
 // Descriptor/string blob magics and flags (<linux/usb/functionfs.h>).
 const DESCRIPTORS_MAGIC_V2: u32 = 3;

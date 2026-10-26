@@ -14,9 +14,10 @@ use std::fs::OpenOptions;
 use std::os::fd::{AsFd, OwnedFd};
 use std::time::Duration;
 
-use dji_orin_interface::ffs::{self, Event, Setup};
 use dji_orin_interface::log::Hex;
-use dji_orin_interface::{aoa, duml, logln, sys};
+use dji_orin_interface::usb::ffs::{self, Event, Setup};
+use dji_orin_interface::usb::sys;
+use dji_orin_interface::{aoa, duml, logln};
 
 /// Handle one ep0 SETUP packet.
 fn handle_setup(ep0: &OwnedFd, s: Setup) {

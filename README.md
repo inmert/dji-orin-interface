@@ -47,16 +47,20 @@ the specific interfaces each device exposes.
 
 ```
 Cargo.toml              Package manifest (no external dependencies)
-src/lib.rs              Crate root (module declarations)
+src/lib.rs              Library root (module declarations)
 src/duml.rs             DUML framing, checksums, Decoder, build + unit tests
 src/aoa.rs              Android Open Accessory constants + DJI identity
-src/usbfs.rs            Host-side USB: device lookup, control/bulk transfers
-src/ffs.rs              Device-side FunctionFS: descriptors, ep0 events, setup
-src/sys.rs              Raw kernel ABI (libc calls + usbfs ioctl structs/codes)
 src/log.rs              Timestamped line logging shared by the binaries
+src/usb.rs              USB transport submodule root
+src/usb/sys.rs          Raw kernel ABI (libc calls + usbfs ioctl structs/codes)
+src/usb/usbfs.rs        Host-side USB: device lookup, control/bulk transfers
+src/usb/ffs.rs          Device-side FunctionFS: descriptors, ep0 events, setup
 src/bin/ffs_capture.rs  Orin as the app toward the controller
 src/bin/aoa_capture.rs  Orin as the controller toward DJI Pilot
 src/bin/bridge.rs       Transparent DUML MITM (both roles at once)
+tests/duml_roundtrip.rs Black-box integration tests of the public DUML API
+examples/decode_frames.rs  Minimal Decoder usage example
+benches/duml_bench.rs   CRC/scan micro-benchmark (no external harness)
 scripts/run_capture.sh  Bring up the FunctionFS gadget + start ffs_capture
 scripts/run_bridge.sh   Bring up the gadget + start the MITM bridge
 scripts/restore_gadget.sh  Tear it down, restore the stock USB gadget
@@ -65,11 +69,12 @@ docs/                   Protocol and hardware notes
 
 The project is **Rust** (edition 2024) with **no external crates** — the USB and
 gadget plumbing uses the system libc through a small set of hand-declared
-externs in `sys`, so it builds fully offline. The reusable protocol logic lives
-in the `duml` module (`parse`/`scan`/`build`, the streaming `Decoder`, `Frame`,
-`ParseError`) so the gadget side, the host side, and any future command sender
-share one validated implementation of framing and checksums. Safe, typed USB
-wrappers (`usbfs`, `ffs`) keep raw pointers out of the binaries. File
+externs in `usb::sys`, so it builds fully offline. The reusable protocol logic
+lives in the `duml` module (`parse`/`scan`/`build`, the streaming `Decoder`,
+`Frame`, `ParseError`) so the gadget side, the host side, and any future command
+sender share one validated implementation of framing and checksums. Safe, typed
+USB wrappers (`usb::usbfs`, `usb::ffs`) keep raw pointers out of the binaries.
+File
 descriptors are owned by `std::os::fd::OwnedFd` (closed on drop); the gadget's
 bulk reader runs on a `std::thread`.
 

@@ -8,6 +8,12 @@ description = "Control a DJI Matrice 210 V1 from a Jetson Orin by speaking the c
 # No external dependencies: the USB/gadget plumbing uses the system libc via
 # hand-declared externs, so the project builds fully offline.
 
+# The benchmark is a plain binary (harness = false): no external bench crate,
+# so `cargo bench` stays offline too.
+[[bench]]
+name = "duml_bench"
+harness = false
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 unused_qualifications = "warn"

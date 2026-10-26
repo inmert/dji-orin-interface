@@ -37,9 +37,10 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
-use dji_orin_interface::ffs::{self, Event, Setup};
-use dji_orin_interface::usbfs::{self, BulkEndpoints, Device};
-use dji_orin_interface::{aoa, duml, logln, sys};
+use dji_orin_interface::usb::ffs::{self, Event, Setup};
+use dji_orin_interface::usb::sys;
+use dji_orin_interface::usb::usbfs::{self, BulkEndpoints, Device};
+use dji_orin_interface::{aoa, duml, logln};
 
 const DJI_VID: u16 = 0x2ca3; // DJI CrystalSky (ZS600B) default mode
 const DJI_PID: u16 = 0x4016;
