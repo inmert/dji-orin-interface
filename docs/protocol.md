@@ -29,6 +29,15 @@ Handshake, as captured from the real controller:
    two bulk endpoints.
 5. **DUML frames** flow over the two bulk endpoints.
 
+> **Fresh handshake vs. control.** DJI Pilot only arms its control pipeline (it
+> actually sends gimbal/flight commands) after a *full* AOA handshake. Teardown
+> leaves the tablet in accessory mode, so a bridge re-run that reuses the
+> existing accessory (skipping the handshake) leaves Pilot streaming telemetry
+> but **inert** — no control. For a bridge capture where Pilot must be
+> controllable, **replug the tablet** first (→ default `2ca3:4016`) so the next
+> run does the full handshake. The standalone `server` doesn't care: it *is* the
+> app, so the skip-handshake path is fine there.
+
 ## DUML frame format
 
 Little-endian multi-byte fields. Total frame length is a 10-bit field.

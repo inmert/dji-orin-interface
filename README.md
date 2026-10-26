@@ -152,12 +152,14 @@ sudo scripts/restore_gadget.sh         # when done
 **Web control server** (no tablet): the Orin is the app toward the RC and serves
 a browser UI — live telemetry and **gimbal control for both cameras**. The
 gimbal move command is injected onto the RC; the two cameras are gimbal device
-index 0 and 2 (see [docs/protocol.md](docs/protocol.md)).
+index 0 and 2 (see [docs/protocol.md](docs/protocol.md)). The **LINK** toggle
+engages the aircraft's native dual-gimbal lock (camera 2 snaps to camera 1 and
+follows it); its state is server-side, so a page refresh reflects it.
 
 > ⚠️ The UI's gimbal buttons move the real camera mount via the **powered**
 > aircraft. Nothing is injected until you press a control, and the on-screen
 > **STOP** or closing the browser releases every gimbal. Run with **propellers
-> removed / aircraft secured** until the control is calibrated.
+> removed / aircraft secured**.
 
 ```bash
 cargo build --release
@@ -181,6 +183,7 @@ DJI's encrypted/encoded stream, so the UI shows a placeholder for now.
 - [x] Gimbal control command decoded (cmd_set 0x04/0x0c, both cameras)
 - [x] Web UI — telemetry + gimbal control, over a native Rust server
 - [x] Inject/calibrate gimbal control on hardware — working, both cameras (props off)
+- [x] Camera LINK — native dual-gimbal lock (both move together), hardware-verified
 - [ ] Live camera video in the UI (encrypted downlink — research spike)
 - [ ] Send/inject flight commands to the aircraft
 
