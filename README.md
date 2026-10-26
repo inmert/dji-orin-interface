@@ -56,7 +56,9 @@ src/sys.rs              Raw kernel ABI (libc calls + usbfs ioctl structs/codes)
 src/log.rs              Timestamped line logging shared by the binaries
 src/bin/ffs_capture.rs  Orin as the app toward the controller
 src/bin/aoa_capture.rs  Orin as the controller toward DJI Pilot
+src/bin/bridge.rs       Transparent DUML MITM (both roles at once)
 scripts/run_capture.sh  Bring up the FunctionFS gadget + start ffs_capture
+scripts/run_bridge.sh   Bring up the gadget + start the MITM bridge
 scripts/restore_gadget.sh  Tear it down, restore the stock USB gadget
 docs/                   Protocol and hardware notes
 ```
@@ -115,13 +117,30 @@ sudo target/release/aoa_capture pilot.log
 # tap OK on any USB-accessory prompt on the CrystalSky
 ```
 
+**Transparent MITM bridge** (tablet on a USB-A port, RC on the USB-C port): the
+Orin is an AOA host toward the tablet and an AOA device toward the RC at once,
+forwarding the raw bulk streams both ways and logging every DUML frame, so DJI
+Pilot flies the real aircraft through the Orin. This milestone is pure
+passthrough — nothing is injected.
+
+> ⚠️ The forwarded stream carries Pilot's flight commands to the **powered**
+> aircraft. Run only with **propellers removed / aircraft secured**.
+
+```bash
+cargo build --release
+# plug the CrystalSky into a USB-A port first, then:
+sudo scripts/run_bridge.sh             # logs to bridge.log
+# ... connect the RC on USB-C; tap OK on any USB-accessory prompt ...
+sudo scripts/restore_gadget.sh         # when done
+```
+
 ## Status
 
 - [x] USB transport identified (AOA; controller is the USB host)
 - [x] AOA handshake implemented both directions (device and host)
 - [x] DUML framing + checksums implemented and validated against captures
 - [x] Receive & decode DUML from the controller and from DJI Pilot
-- [ ] Transparent MITM bridge (tablet ↔ Orin ↔ controller ↔ aircraft)
+- [x] Transparent MITM bridge — passthrough + logging (not yet hardware-tested)
 - [ ] Send/inject flight commands to the aircraft
 
 ## Acknowledgements

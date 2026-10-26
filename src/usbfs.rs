@@ -168,6 +168,24 @@ impl Device {
         Ok(n as usize)
     }
 
+    /// Write `data` to a bulk OUT endpoint, returning the byte count. A
+    /// `timeout` of zero blocks until the device accepts the transfer.
+    pub fn bulk_write(&self, ep: u8, data: &[u8], timeout: u32) -> io::Result<usize> {
+        let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+        let mut t = sys::BulkTransfer {
+            ep: u32::from(ep),
+            len,
+            timeout,
+            // An OUT transfer: the kernel only reads `len` bytes from here.
+            data: data.as_ptr().cast_mut().cast::<c_void>(),
+        };
+        // SAFETY: `t` is a well-formed usbdevfs_bulktransfer for USBDEVFS_BULK,
+        // `ep` is an OUT endpoint, and `data` is valid for reads of `len` bytes.
+        let n =
+            unsafe { sys::ioctl(self.fd(), sys::USBDEVFS_BULK, (&raw mut t).cast::<c_void>())? };
+        Ok(n as usize)
+    }
+
     /// Claim an interface, detaching any bound kernel driver first
     /// (DISCONNECT_CLAIM), falling back to a plain claim.
     pub fn claim_interface(&self, interface: u32) -> io::Result<Claim> {
