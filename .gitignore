@@ -15,3 +15,8 @@ captures/
 # Keep shared VSCode config, ignore per-user settings
 .vscode/*
 !.vscode/tasks.json
+
+# Web front end
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
