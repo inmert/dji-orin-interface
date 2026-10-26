@@ -25,6 +25,8 @@ export interface Telemetry {
   frames: number;
   gimbals: Record<string, GimbalAttitude>;
   streams: Record<string, StreamStat>;
+  /** Server-authoritative camera-link state, so a refreshed page reflects it. */
+  linked: boolean;
 }
 
 // --- Commands (mirror WsCommand in src/bin/server.rs) ---
@@ -36,7 +38,7 @@ export type Command =
 
 export type Status = "connecting" | "open" | "closed";
 
-const EMPTY: Telemetry = { link_up: false, frames: 0, gimbals: {}, streams: {} };
+const EMPTY: Telemetry = { link_up: false, frames: 0, gimbals: {}, streams: {}, linked: false };
 
 /** WebSocket link to the Orin server: telemetry down, commands up, auto-reconnect. */
 export function useLink() {

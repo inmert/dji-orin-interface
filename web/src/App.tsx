@@ -149,13 +149,11 @@ function StreamsTable({ telemetry }: { telemetry: Telemetry }) {
 
 export function App() {
   const { status, telemetry, send } = useLink();
-  const [linked, setLinked] = useState(false);
+  // Link state is server-authoritative (survives page refresh); the button just
+  // asks the server to toggle, and the UI follows the next telemetry update.
+  const linked = telemetry.linked;
   const stopAll = () => send({ cmd: "stop" });
-  const toggleLink = () => {
-    const on = !linked;
-    setLinked(on);
-    send({ cmd: "link", on });
-  };
+  const toggleLink = () => send({ cmd: "link", on: !linked });
 
   return (
     <div className="app">

@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tungstenite::Message;
 
 use dji_orin_interface::control::{
@@ -38,6 +38,7 @@ use dji_orin_interface::{aoa, duml, logln};
 
 const HTTP_ADDR: &str = "0.0.0.0:8080";
 const WS_ADDR: &str = "0.0.0.0:8081";
+// Command/telemetry rate, matching the ~10 Hz Pilot drove the gimbal at.
 const INJECT_HZ: u64 = 10;
 
 /// Shared desired gimbal state, one slot per camera, updated by the WS clients
@@ -109,6 +110,15 @@ enum WsCommand {
 
 type Shared = Arc<Mutex<Commands>>;
 type Tele = Arc<Mutex<Telemetry>>;
+
+/// What the server broadcasts to the UI: the telemetry snapshot plus the current
+/// link state, so a freshly-loaded or refreshed page reflects the real state.
+#[derive(Serialize)]
+struct Snapshot<'a> {
+    #[serde(flatten)]
+    tele: &'a Telemetry,
+    linked: bool,
+}
 
 fn die(msg: &str) -> ! {
     logln!("{msg}");
@@ -301,9 +311,12 @@ fn ws_client(stream: TcpStream, cmds: Shared, tele: Tele) {
     let interval = Duration::from_millis(1000 / INJECT_HZ);
     loop {
         if last_send.elapsed() >= interval {
+            // Include the link state so a refreshed UI reflects the real state.
+            let linked = cmds.lock().unwrap().linked;
             let json = {
                 let t = tele.lock().unwrap();
-                serde_json::to_string(&*t).unwrap_or_else(|_| "{}".into())
+                serde_json::to_string(&Snapshot { tele: &t, linked })
+                    .unwrap_or_else(|_| "{}".into())
             };
             if ws.send(Message::text(json)).is_err() {
                 break;
