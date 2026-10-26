@@ -194,11 +194,35 @@ fn handle_setup(ep0: BorrowedFd<'_>, s: Setup) {
 
 /// Forward one raw bulk stream verbatim, logging the CRC-valid DUML it carries.
 /// `label` tags the log lines; `read`/`write` move the bytes.
+/// Command sets whose payloads should be hex-dumped in the log, parsed once
+/// from `BRIDGE_HEX_SETS` (comma/space-separated hex bytes, e.g. "04,03").
+/// Empty (unset) keeps the log to the one-line frame summary. This is passive
+/// logging only — the raw stream is still forwarded verbatim and unchanged.
+fn hex_sets_from_env() -> Vec<u8> {
+    std::env::var("BRIDGE_HEX_SETS")
+        .unwrap_or_default()
+        .split([',', ' '])
+        .filter_map(|s| u8::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok())
+        .collect()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 3);
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 {
+            s.push(' ');
+        }
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
 fn relay(
     label: &'static str,
     mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
     write: impl Fn(&[u8]) -> std::io::Result<usize>,
 ) {
+    let hex_sets = hex_sets_from_env();
     let mut decoder = duml::Decoder::new();
     let mut buf = vec![0u8; 16384];
     loop {
@@ -221,7 +245,11 @@ fn relay(
                 decoder.push(&buf[..n]);
                 decoder.drain(|f| {
                     if f.crc_ok {
-                        logln!("{label} {f}");
+                        if hex_sets.contains(&f.cmd_set) {
+                            logln!("{label} {f} | payload={}", hex(f.payload));
+                        } else {
+                            logln!("{label} {f}");
+                        }
                     }
                 });
             }
