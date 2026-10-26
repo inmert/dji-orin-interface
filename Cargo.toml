@@ -5,8 +5,10 @@ edition = "2024"
 rust-version = "1.85"
 description = "Control a DJI Matrice 210 V1 from a Jetson Orin by speaking the controller's DUML protocol over USB"
 
-# No external dependencies: the USB/gadget plumbing uses the system libc via
-# hand-declared externs, so the project builds fully offline.
+# The core (duml/usb/control/telemetry + the capture/bridge binaries) is
+# dependency-free and builds offline — the USB/gadget plumbing uses the system
+# libc via hand-declared externs. The dependencies below are only for the `server`
+# binary's web UI (static HTTP, WebSocket, JSON).
 
 # The benchmark is a plain binary (harness = false): no external bench crate,
 # so `cargo bench` stays offline too.
@@ -27,3 +29,9 @@ format_collect = "warn"
 
 [profile.release]
 opt-level = 2
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tiny_http = "0.12.0"
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
