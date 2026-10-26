@@ -123,6 +123,23 @@ Decoded from captured DJI Pilot traffic and implemented in
 - Also seen: `cmd_set=0x04 cmd_id=0x10` (1-byte mode/recenter enum, sent to both
   gimbals) and the attitude report `cmd_set=0x04 cmd_id=0x05` the gimbals push up.
 
+### Camera lock (dual-gimbal follow)
+
+Pilot's "lock cameras together" button, captured from its traffic. Addressed to
+the gimbal **sync index 7** (receiver byte `0xe4`), `cmd_set = 0x19`:
+
+| action | command | payload |
+|--------|---------|---------|
+| lock on  | `cmd_id = 0x07` | `01 00` |
+| lock off | `cmd_id = 0x07` | `00 00`, then `cmd_id = 0x05` payload `00` |
+
+Byte 0 of the `0x07` payload is the enable flag. **While locked, Pilot drives
+only `Gimbal[0]` (the master)** and the aircraft moves camera 2 to follow — so to
+replicate it, engage the lock then drive the master only. (`cmd_set=0x19
+cmd_id=0x06 len=5` is just a periodic status push.) Built in
+[`src/control.rs`](../src/control.rs) (`gimbal_lock_frame`) and used by the web
+server's LINK toggle.
+
 ## Observations
 
 - From the controller the Orin receives mostly ~716-byte high-entropy frames

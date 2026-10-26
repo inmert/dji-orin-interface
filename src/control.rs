@@ -27,6 +27,13 @@ pub const CMD_SET_GIMBAL: u8 = 0x04;
 /// Gimbal move command id (pitch/roll/yaw + flag).
 pub const CMD_ID_GIMBAL_MOVE: u8 = 0x0c;
 
+/// Dual-gimbal sync command set and the camera-lock ids (captured from Pilot's
+/// "lock cameras" button). The lock is addressed to the gimbal sync index 7.
+pub const CMD_SET_GIMBAL_SYNC: u8 = 0x19;
+pub const CMD_ID_LOCK: u8 = 0x07;
+pub const CMD_ID_LOCK_AUX: u8 = 0x05;
+const GIMBAL_SYNC_INDEX: u8 = 7;
+
 /// Default command-type byte for the move command. Provisional: the captured
 /// value was not recorded (the log showed set/id/payload only). The first
 /// hardware injection test calibrates it; `GIMBAL_CMD_TYPE` overrides it at
@@ -117,6 +124,32 @@ pub fn gimbal_move_frame(camera: Camera, mv: GimbalMove, seq: u16) -> Vec<u8> {
     duml::build(&header, &mv.payload()).expect("gimbal frame within length limit")
 }
 
+fn sync_header(seq: u16, cmd_id: u8) -> Header {
+    Header {
+        sender: addr(Device::App, 0),
+        receiver: addr(Device::Gimbal, GIMBAL_SYNC_INDEX),
+        seq,
+        cmd_type: cmd_type(),
+        cmd_set: CMD_SET_GIMBAL_SYNC,
+        cmd_id,
+    }
+}
+
+/// The camera-lock command (dual-gimbal follow): `on` engages the lock so both
+/// cameras move together driven by camera 1, `off` disengages. Payload byte 0 is
+/// the enable flag (captured: `01 00` = on, `00 00` = off).
+pub fn gimbal_lock_frame(on: bool, seq: u16) -> Vec<u8> {
+    duml::build(&sync_header(seq, CMD_ID_LOCK), &[u8::from(on), 0])
+        .expect("lock frame within length limit")
+}
+
+/// The companion command Pilot sends alongside disengaging the lock
+/// (`cmd_id 0x05`, payload `00`).
+pub fn gimbal_lock_release_aux_frame(seq: u16) -> Vec<u8> {
+    duml::build(&sync_header(seq, CMD_ID_LOCK_AUX), &[0])
+        .expect("lock-aux frame within length limit")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +180,23 @@ mod tests {
             active: true,
         };
         assert_eq!(mv.payload(), [0xd4, 0xfe, 0x00, 0x00, 0xf4, 0x01, 0x80]);
+    }
+
+    #[test]
+    fn lock_frame_matches_capture() {
+        // Captured: lock-on = 0x19/0x07 "01 00" to Gimbal[7] (receiver 0xe4).
+        let on = gimbal_lock_frame(true, 1);
+        let (f, n) = duml::parse(&on).unwrap();
+        assert_eq!(n, on.len());
+        assert!(f.hdr_crc_ok && f.crc_ok);
+        assert_eq!(f.receiver, 0xe4); // gimbal type, index 7
+        assert_eq!(f.cmd_set, CMD_SET_GIMBAL_SYNC);
+        assert_eq!(f.cmd_id, CMD_ID_LOCK);
+        assert_eq!(f.payload, &[0x01, 0x00]);
+
+        let off = gimbal_lock_frame(false, 2);
+        let (f, _) = duml::parse(&off).unwrap();
+        assert_eq!(f.payload, &[0x00, 0x00]);
     }
 
     #[test]
