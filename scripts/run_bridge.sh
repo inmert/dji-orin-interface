@@ -10,7 +10,8 @@
 # aircraft. Run only with propellers removed / aircraft secured.
 #
 # Order: plug the tablet (CrystalSky) into a USB-A port first; this script does
-# its AOA handshake. The RC goes on the USB-C port.
+# its AOA handshake (or reuses an accessory-mode tablet left by a prior run).
+# The RC goes on the USB-C port.
 #
 # Usage: sudo scripts/run_bridge.sh [logfile]
 set -euo pipefail
@@ -22,6 +23,29 @@ DAEMON="$REPO/target/release/bridge"
 LOG="${1:-$REPO/bridge.log}"
 UDC_NAME="$(ls /sys/class/udc | head -1)"
 
+DAEMON_PID=""
+COMMITTED=0
+
+# Tear down whatever partial state we created, then rebind the stock gadget.
+# Mirrors restore_gadget.sh; safe to call at any point after we start.
+cleanup() {
+    [ "$COMMITTED" = 1 ] && return   # success: leave the running bridge in place
+    echo "run_bridge: startup failed; cleaning up gadget state" >&2
+    [ -n "$DAEMON_PID" ] && kill "$DAEMON_PID" 2>/dev/null || true
+    [ -e "$G/dji/UDC" ] && echo "" > "$G/dji/UDC" 2>/dev/null || true
+    rm -f "$G/dji/configs/c.1/ffs.dji" 2>/dev/null || true
+    mountpoint -q "$FFS" && umount "$FFS" 2>/dev/null || true
+    rmdir "$G/dji/functions/ffs.dji" 2>/dev/null || true
+    rmdir "$G/dji/configs/c.1/strings/0x409" 2>/dev/null || true
+    rmdir "$G/dji/configs/c.1" 2>/dev/null || true
+    rmdir "$G/dji/strings/0x409" 2>/dev/null || true
+    rmdir "$G/dji" 2>/dev/null || true
+    rm -f /run/ffs_capture.pid 2>/dev/null || true
+    if [ -d "$G/l4t" ] && [ -z "$(cat "$G/l4t/UDC" 2>/dev/null)" ]; then
+        echo "$UDC_NAME" > "$G/l4t/UDC" 2>/dev/null && echo "restored l4t gadget" >&2 || true
+    fi
+}
+
 [ -x "$DAEMON" ] || { echo "build first: cargo build --release   (missing $DAEMON)"; exit 1; }
 modprobe usb_f_fs 2>/dev/null || true
 
@@ -29,6 +53,10 @@ if [ -d "$G/dji" ]; then
     echo "gadget $G/dji already exists; run 'sudo scripts/restore_gadget.sh' first" >&2
     exit 1
 fi
+
+# From here on we create state the stock system doesn't own, so clean it up on
+# any failure or signal (the COMMITTED guard spares the successful path).
+trap cleanup EXIT INT TERM
 
 # 1. Unbind any currently-bound gadget (e.g. the stock l4t one).
 for g in "$G"/*/; do
@@ -64,20 +92,24 @@ mountpoint -q "$FFS" || mount -t functionfs dji "$FFS"
 DAEMON_PID=$!
 echo "$DAEMON_PID" > /run/ffs_capture.pid
 
-# 5. Wait for descriptors before binding the UDC (the tablet AOA handshake runs
-#    after this, so the RC may enumerate while the tablet comes up — its events
-#    queue on ep0). Poll the log, not a fixed sleep, and bail if the bridge dies.
-for _ in $(seq 1 150); do
-    grep -q "descriptors+strings written" "$LOG" && break
+# 5. Wait until BOTH sides are staged before binding the UDC. The daemon logs
+#    "both sides staged" only after the tablet AOA handshake (host side, no UDC
+#    needed) has succeeded, so a tablet-side failure makes the daemon exit here
+#    and the cleanup trap tears everything down instead of leaving a half-built
+#    gadget that fails UDC bind with EBUSY. Allow time for a screen tap.
+MARKER="both sides staged"
+for _ in $(seq 1 1200); do          # up to ~60s at 0.05s/poll
+    grep -q "$MARKER" "$LOG" && break
     kill -0 "$DAEMON_PID" 2>/dev/null || { echo "bridge exited early; see $LOG" >&2; exit 1; }
-    sleep 0.02
+    sleep 0.05
 done
-if ! grep -q "descriptors+strings written" "$LOG"; then
-    echo "timed out waiting for bridge to write descriptors; see $LOG" >&2
+if ! grep -q "$MARKER" "$LOG"; then
+    echo "timed out waiting for the tablet side to come up; see $LOG" >&2
     exit 1
 fi
 
-# 6. Bind to the UDC (RC enumeration happens on plug-in).
+# 6. Both sides up: bind the UDC so the RC can enumerate us.
 echo "$UDC_NAME" > "$G/dji/UDC"
+COMMITTED=1                          # past this point the bridge is live; keep it
 echo "OK: bridge gadget bound to $UDC_NAME (18d1:2d00). Log: $LOG"
 echo "   Watch the log for 'relays: ... forwarding' once the RC enables the gadget."

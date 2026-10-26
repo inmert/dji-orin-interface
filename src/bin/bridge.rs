@@ -50,14 +50,21 @@ fn die(msg: &str) -> ! {
     std::process::exit(1);
 }
 
-/// Bring up the tablet side: AOA host handshake, wait for accessory-mode
-/// re-enumeration, open it, find its bulk endpoints and claim interface 0.
-fn open_tablet() -> (Device, BulkEndpoints) {
-    let Some(addr) = usbfs::find_device(DJI_VID, DJI_PID) else {
-        die(&format!(
-            "DJI {DJI_VID:04x}:{DJI_PID:04x} not found; plug the CrystalSky into a USB-A port."
-        ));
-    };
+/// Look for the tablet already enumerated in AOA accessory mode (ADB variant
+/// preferred), e.g. because a previous run left it there. Returns its address
+/// and PID if present.
+fn find_accessory() -> Option<(usbfs::BusAddr, u16)> {
+    usbfs::find_device(aoa::GOOGLE_VID, aoa::ACCESSORY_ADB_PID)
+        .map(|a| (a, aoa::ACCESSORY_ADB_PID))
+        .or_else(|| {
+            usbfs::find_device(aoa::GOOGLE_VID, aoa::ACCESSORY_PID).map(|a| (a, aoa::ACCESSORY_PID))
+        })
+}
+
+/// Drive the AOA host handshake against the DJI device so it re-enumerates in
+/// accessory mode. Returns once the handshake has been sent; the caller polls
+/// for the accessory device to appear. Dies if the device is absent or refuses.
+fn aoa_handshake(addr: usbfs::BusAddr) {
     logln!("tablet: found DJI at bus {} dev {}", addr.bus, addr.dev);
     let dev = Device::open(addr).unwrap_or_else(|e| die(&format!("tablet: open: {e}")));
 
@@ -95,26 +102,11 @@ fn open_tablet() -> (Device, BulkEndpoints) {
     }
     drop(dev);
     logln!("tablet: waiting for accessory-mode re-enumeration (tap OK on the screen if asked)");
+}
 
-    let mut found = None;
-    for _ in 0..200 {
-        if let Some(a) = usbfs::find_device(aoa::GOOGLE_VID, aoa::ACCESSORY_ADB_PID) {
-            found = Some((a, aoa::ACCESSORY_ADB_PID));
-            break;
-        }
-        if let Some(a) = usbfs::find_device(aoa::GOOGLE_VID, aoa::ACCESSORY_PID) {
-            found = Some((a, aoa::ACCESSORY_PID));
-            break;
-        }
-        sleep(Duration::from_millis(50));
-    }
-    let (addr, apid) = found.unwrap_or_else(|| die("tablet: accessory device never appeared"));
-    logln!(
-        "tablet: accessory mode up {:04x}:{apid:04x}",
-        aoa::GOOGLE_VID
-    );
-    sleep(Duration::from_millis(200));
-
+/// Open an already-enumerated accessory device: read its descriptors, find the
+/// bulk endpoints and claim interface 0.
+fn open_accessory(addr: usbfs::BusAddr) -> (Device, BulkEndpoints) {
     let acc = Device::open(addr).unwrap_or_else(|e| die(&format!("tablet: open accessory: {e}")));
     let mut desc = [0u8; 2048];
     let dn = match acc.read_descriptors(&mut desc) {
@@ -134,6 +126,46 @@ fn open_tablet() -> (Device, BulkEndpoints) {
         Err(e) => logln!("tablet: warning: claim failed: {e}"),
     }
     (acc, eps)
+}
+
+/// Bring up the tablet side and return its claimed accessory + bulk endpoints.
+///
+/// Idempotent across runs: if the tablet is already in AOA accessory mode (a
+/// previous run left it there — teardown does not reset it), skip the handshake
+/// and open it directly. Otherwise run the AOA host handshake against the DJI
+/// device and wait for it to re-enumerate in accessory mode.
+fn open_tablet() -> (Device, BulkEndpoints) {
+    if let Some((addr, apid)) = find_accessory() {
+        logln!(
+            "tablet: already in accessory mode {:04x}:{apid:04x}; skipping handshake",
+            aoa::GOOGLE_VID
+        );
+        return open_accessory(addr);
+    }
+
+    let Some(addr) = usbfs::find_device(DJI_VID, DJI_PID) else {
+        die(&format!(
+            "DJI {DJI_VID:04x}:{DJI_PID:04x} not found and no accessory present; \
+             plug the CrystalSky into a USB-A port (or replug it to reset accessory mode)."
+        ));
+    };
+    aoa_handshake(addr);
+
+    let mut found = None;
+    for _ in 0..200 {
+        if let Some(a) = find_accessory() {
+            found = Some(a);
+            break;
+        }
+        sleep(Duration::from_millis(50));
+    }
+    let (addr, apid) = found.unwrap_or_else(|| die("tablet: accessory device never appeared"));
+    logln!(
+        "tablet: accessory mode up {:04x}:{apid:04x}",
+        aoa::GOOGLE_VID
+    );
+    sleep(Duration::from_millis(200));
+    open_accessory(addr)
 }
 
 /// Answer one ep0 SETUP packet (the AOA handshake the RC drives against us).
