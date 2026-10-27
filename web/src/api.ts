@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// --- Telemetry shapes (mirror src/telemetry.rs, src/gimbal/attitude.rs) ---
+// --- Telemetry shapes (mirror crates/protocol/src/telemetry.rs,
+//     crates/protocol/src/gimbal/attitude.rs, and Snapshot in apps/server/src/ws.rs) ---
 
 export interface GimbalAttitude {
   index: number;
@@ -29,7 +30,7 @@ export interface Telemetry {
   linked: boolean;
 }
 
-// --- Commands (mirror WsCommand in src/bin/server/state.rs) ---
+// --- Commands (mirror WsCommand in apps/server/src/state.rs) ---
 
 export type Command =
   | { cmd: "gimbal"; camera: number; pitch: number; yaw: number; active: boolean }

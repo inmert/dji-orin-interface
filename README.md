@@ -105,12 +105,12 @@ descriptors are `std::os::fd::OwnedFd` (closed on drop).
 **Toolchain:** Rust via `rustup`, edition 2024 (needs **rustc 1.85+**;
 developed with 1.99 on aarch64). No build-time kernel headers — the usbfs/gadget
 ABI is declared in `sys`. If `cargo` isn't on your PATH:
-`export PATH="$HOME/.cargo/bin:$PATH"`. The web UI additionally needs Node
-(developed with Node 24 / npm 11) to build, and a few small crates are fetched
-for the `server` binary.
+`export PATH="$HOME/.cargo/bin:$PATH"`. The web UI additionally needs Node 22+
+to build (CI uses 22; developed with Node 24 / npm 11), and a few small crates
+are fetched for the `server` binary.
 
 ```bash
-cargo build --release   # binaries in target/release/{ffs_capture,aoa_capture}
+cargo build --release   # binaries in target/release/{ffs_capture,aoa_capture,bridge,server}
 cargo test --workspace  # all unit + integration tests
 cargo clippy --workspace --all-targets   # lint
 ```
@@ -119,9 +119,9 @@ cargo clippy --workspace --all-targets   # lint
 
 Install the **rust-analyzer** extension (not the C/C++ one); no extra config is
 needed. The repo ships `.vscode/tasks.json`, so **Terminal → Run Build Task**
-runs `cargo build` and **Run Test Task** runs `cargo test`. The capture programs
-need `sudo` and the real USB hardware, so run those from a terminal, not the
-VSCode run button.
+runs `cargo build` and **Run Test Task** runs `cargo test --workspace`. The
+capture programs need `sudo` and the real USB hardware, so run those from a
+terminal, not the VSCode run button.
 
 ## Usage
 
@@ -177,7 +177,7 @@ follows it); its state is server-side, so a page refresh reflects it.
 
 ```bash
 cargo build --release
-(cd web && npm install && npm run build)   # build the React UI into web/dist
+(cd web && npm ci && npm run build)       # build the React UI into web/dist
 # connect the RC on USB-C, then:
 sudo scripts/run_server.sh                 # logs to server.log
 # open http://<orin-ip>:8080/ on a device on the same network

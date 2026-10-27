@@ -17,7 +17,7 @@
     {
       "label": "test",
       "type": "shell",
-      "command": "cargo test",
+      "command": "cargo test --workspace",
       "group": { "kind": "test", "isDefault": true },
       "problemMatcher": ["$rustc"]
     },

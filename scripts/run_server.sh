@@ -43,7 +43,7 @@ cleanup() {
 }
 
 [ -x "$DAEMON" ] || { echo "build first: cargo build --release   (missing $DAEMON)"; exit 1; }
-[ -f "$WEB_ROOT/index.html" ] || { echo "build the web UI first: (cd web && npm install && npm run build)"; exit 1; }
+[ -f "$WEB_ROOT/index.html" ] || { echo "build the web UI first: (cd web && npm ci && npm run build)"; exit 1; }
 modprobe usb_f_fs 2>/dev/null || true
 
 if [ -d "$G/dji" ]; then
