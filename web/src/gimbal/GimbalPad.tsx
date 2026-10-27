@@ -4,8 +4,8 @@ import { Command, GimbalAttitude } from "../api";
 // Camera N (UI) → gimbal device index (DUML). Camera 1 = index 0, camera 2 = 2.
 const CAMERA_INDEX: Record<number, number> = { 1: 0, 2: 2 };
 
-// Provisional sign mapping, isolated so it is a one-line flip after we calibrate
-// against the physical gimbal on the first hardware test.
+// Sign mapping, verified on hardware: up/down tilt and left/right pan with the
+// signs as sent.
 const DIRS = {
   up: (s: number) => ({ pitch: s, yaw: 0 }),
   down: (s: number) => ({ pitch: -s, yaw: 0 }),

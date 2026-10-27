@@ -12,7 +12,7 @@
 //!
 //! SAFETY: the gimbal commands move the real camera mount via the powered
 //! aircraft. Nothing is injected until the UI sends a command; a WS disconnect
-//! or the UI STOP releases every gimbal. Run props-off until calibrated.
+//! or the UI STOP releases every gimbal. Run props-off / aircraft secured.
 //!
 //! Usage: `server <ffs_mount_dir> [web_root]`        (run as root)
 

@@ -11,15 +11,16 @@
 //!   it); `flag = 0x80` while a move is active, `0x00` to release/stop (a full
 //!   release is an all-zero payload).
 //!
-//! The values Pilot sent ramped smoothly while a stick was held, so the exact
-//! semantics (driven setpoint vs. speed) are still being calibrated; the
-//! command-type byte is isolated in [`cmd_type`] so it is a one-line change.
+//! The command-type byte `0x00` is verified on hardware; it is isolated in
+//! [`cmd_type`] so it can still be overridden for experiments. The values Pilot
+//! sent ramped smoothly while a stick was held, so whether they are a driven
+//! setpoint or a speed is not yet characterized.
 
 use super::{CMD_ID_LOCK, CMD_ID_LOCK_AUX, CMD_ID_MOVE, CMD_SET, CMD_SET_SYNC, Camera, SYNC_INDEX};
 use crate::duml::{self, Device, Header};
 
-/// Default command-type byte for gimbal commands. The first hardware injection
-/// test calibrates it; `GIMBAL_CMD_TYPE` overrides it at runtime (e.g.
+/// Default command-type byte for gimbal commands (`0x00`, verified on
+/// hardware). `GIMBAL_CMD_TYPE` overrides it at runtime (e.g.
 /// `GIMBAL_CMD_TYPE=0x40`) so trying values needs no recompile.
 pub const CMD_TYPE_DEFAULT: u8 = 0x00;
 

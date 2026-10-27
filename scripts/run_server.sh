@@ -7,7 +7,7 @@
 #
 # SAFETY: the gimbal commands the UI sends move the real camera mount via the
 # powered aircraft. Nothing is injected until the UI sends a command, and a UI
-# STOP / browser disconnect releases every gimbal. Run props-off until calibrated.
+# STOP / browser disconnect releases every gimbal. Run props-off / aircraft secured.
 #
 # Usage: sudo scripts/run_server.sh [logfile]
 #   Then open http://<orin-ip>:8080/ in a browser on the same network.

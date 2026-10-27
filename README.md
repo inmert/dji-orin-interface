@@ -105,7 +105,7 @@ descriptors are `std::os::fd::OwnedFd` (closed on drop).
 **Toolchain:** Rust via `rustup`, edition 2024 (needs **rustc 1.85+**;
 developed with 1.99 on aarch64). No build-time kernel headers — the usbfs/gadget
 ABI is declared in `sys`. If `cargo` isn't on your PATH:
-`export PATH="$HOME/.cargo/bin:$PATH"`. The web UI additionally needs Node 22+
+`export PATH="$HOME/.cargo/bin:$PATH"`. The web UI additionally needs Node 18+
 to build (CI uses 22; developed with Node 24 / npm 11), and a few small crates
 are fetched for the `server` binary.
 
@@ -119,13 +119,15 @@ cargo clippy --workspace --all-targets   # lint
 
 Install the **rust-analyzer** extension (not the C/C++ one); no extra config is
 needed. The repo ships `.vscode/tasks.json`, so **Terminal → Run Build Task**
-runs `cargo build` and **Run Test Task** runs `cargo test --workspace`. The
+runs `cargo build` (the whole workspace, including the server's web crates;
+use `cargo build -p dji-tools` for just the capture tools) and **Run Test
+Task** runs `cargo test --workspace`. The
 capture programs need `sudo` and the real USB hardware, so run those from a
 terminal, not the VSCode run button.
 
 ## Usage
 
-Both tools require root (USB gadget config and raw USB access) and are specific
+All the binaries require root (USB gadget config and raw USB access) and are specific
 to this Orin's USB hardware. See the docs for wiring details.
 
 **Capture / act as the app toward the Cendence controller** (Orin USB-C ↔ RC

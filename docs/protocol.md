@@ -64,8 +64,9 @@ off  size  field
 - **Frame CRC-16:** reflected CRC-16/CCITT, polynomial `0x1021` (reflected
   `0x8408`), init `0x3692`.
 
-Both are implemented in [`src/duml.rs`](../crates/protocol/src/duml.rs) and checked by its unit
-tests (`cargo test`) against real captured frames.
+Both are implemented in [`crates/protocol/src/duml.rs`](../crates/protocol/src/duml.rs)
+and checked by its unit tests (`cargo test -p dji-protocol`) against real
+captured frames.
 
 ### Worked example
 
@@ -162,5 +163,5 @@ server's LINK toggle.
   frames that straddle USB read boundaries.
 - With **no aircraft present** behind the Orin, DJI Pilot only emits
   `cmd_set=0x00 cmd_id=0x01` "get version" discovery polls to each module. Real
-  flight commands require Pilot to believe a full aircraft is connected — hence
-  the planned transparent bridge to the real drone.
+  flight commands require Pilot to believe a full aircraft is connected — which
+  is why `bridge` relays a real aircraft to Pilot.

@@ -26,8 +26,11 @@ handshake; the app device is the **peripheral**. Consequences:
 The Orin presents a **FunctionFS** gadget (`18d1:2d00`, one vendor interface +
 2 bulk endpoints) on its USB-C port. `scripts/run_capture.sh` builds the gadget
 via configfs, mounts functionfs at `/dev/ffs-dji`, starts `ffs_capture`, and
-binds the UDC (`3550000.usb`). `scripts/restore_gadget.sh` tears it down and
-rebinds the stock NVIDIA `l4t` gadget.
+binds the UDC (`3550000.usb`). `scripts/run_bridge.sh` and
+`scripts/run_server.sh` build the same gadget for `bridge` and `server`; all
+three record the daemon in `/run/ffs_capture.pid`, so
+`scripts/restore_gadget.sh` tears down any of them and rebinds the stock NVIDIA
+`l4t` gadget.
 
 Kernel support present: `CONFIG_USB_CONFIGFS=m`, `CONFIG_USB_CONFIGFS_F_FS=y`.
 Not present: `usbmon`, `raw-gadget`, `dummy_hcd`, `CONFIG_FUNCTION_TRACER` —
