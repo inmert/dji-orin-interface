@@ -51,13 +51,21 @@ impl fmt::Display for Hex<'_> {
     }
 }
 
+/// Bytes as space-separated hex with no leading space: `"55 0d ff"`.
+pub fn hex(bytes: &[u8]) -> String {
+    let s = Hex(bytes).to_string();
+    s.strip_prefix(' ').unwrap_or(&s).to_owned()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Hex;
+    use super::{Hex, hex};
 
     #[test]
     fn hex_formats_bytes() {
         assert_eq!(Hex(&[0x55, 0x0d, 0xff]).to_string(), " 55 0d ff");
         assert_eq!(Hex(&[]).to_string(), "");
+        assert_eq!(hex(&[0x55, 0x0d, 0xff]), "55 0d ff");
+        assert_eq!(hex(&[]), "");
     }
 }

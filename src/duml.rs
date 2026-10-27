@@ -44,7 +44,7 @@ pub enum Device {
 }
 
 impl Device {
-    /// Display name of a device type, or `None` for an unknown id.
+    /// Display name of a device type.
     pub fn name(self) -> &'static str {
         DEVICE_NAMES[self as usize]
     }
@@ -103,6 +103,12 @@ impl fmt::Display for DevName {
             write!(f, "type{:#04x}[{idx}]", self.0 & 0x1F)
         }
     }
+}
+
+/// Encode a sender/receiver byte from a device type and index (the inverse of
+/// the decode in [`DevName`]): low 5 bits type, high 3 bits index.
+pub fn addr(device: Device, index: u8) -> u8 {
+    (device as u8 & 0x1F) | (index << 5)
 }
 
 /// DJI header checksum: CRC-8, reflected poly 0x31, init 0x77.

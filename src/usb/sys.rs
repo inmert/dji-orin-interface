@@ -1,6 +1,6 @@
 //! Raw kernel ABI: the few libc calls std does not cover, plus the usbfs ioctl
-//! structures and request codes. Safe, typed wrappers live in [`crate::usbfs`]
-//! and [`crate::ffs`]; nothing outside those modules should need this one.
+//! structures and request codes. Safe, typed wrappers live in [`super::usbfs`]
+//! and [`super::ffs`]; nothing outside those modules should need this one.
 
 use core::ffi::{c_int, c_ulong, c_void};
 use std::io;

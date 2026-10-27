@@ -3,6 +3,14 @@
 //! The AOA host (the Cendence controller, or `aoa_capture` impersonating it)
 //! sends vendor control requests to the device, which then (re-)enumerates
 //! with Google's accessory VID/PID and two bulk endpoints.
+//!
+//! * [`host`] — the Orin as the AOA host (impersonating the controller toward a
+//!   DJI tablet): handshake, accessory discovery, bulk endpoint setup.
+//! * [`device`] — the Orin as the AOA device (impersonating the app toward the
+//!   controller): answering the controller's ep0 handshake.
+
+pub mod device;
+pub mod host;
 
 /// `bmRequestType` for AOA requests: vendor, device recipient.
 pub const REQUEST_TYPE_IN: u8 = 0xC0;
@@ -23,6 +31,10 @@ pub const GOOGLE_VID: u16 = 0x18d1;
 pub const ACCESSORY_PID: u16 = 0x2d00;
 /// Accessory mode + ADB.
 pub const ACCESSORY_ADB_PID: u16 = 0x2d01;
+
+/// DJI CrystalSky (ZS600B) in its default (pre-accessory) mode.
+pub const CRYSTALSKY_VID: u16 = 0x2ca3;
+pub const CRYSTALSKY_PID: u16 = 0x4016;
 
 /// Names of the `SEND_STRING` fields, by `wIndex`.
 pub const STRING_FIELDS: [&str; 6] = [

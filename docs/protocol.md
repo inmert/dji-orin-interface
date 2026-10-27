@@ -104,8 +104,9 @@ Higher types seen in captures (e.g. `0x0e`, `0x1f`) are not all identified.
 
 ## Command injection: gimbal control
 
-Decoded from captured DJI Pilot traffic and implemented in
-[`src/control.rs`](../src/control.rs).
+Decoded from captured DJI Pilot traffic and implemented in the `gimbal` module
+([`src/gimbal.rs`](../src/gimbal.rs), frames in
+[`src/gimbal/command.rs`](../src/gimbal/command.rs)).
 
 - **Move command:** `cmd_set = 0x04` (Gimbal), `cmd_id = 0x0c`, sender App
   (`0x02`), receiver Gimbal, `cmd_type = 0x00`. 7-byte payload, little-endian
@@ -125,7 +126,7 @@ Decoded from captured DJI Pilot traffic and implemented in
   byte): camera 1 = index 0 (receiver `0x04`), camera 2 = index 2 (`0x44`). A
   single DJI Pilot instance only drives one gimbal at a time; our server
   addresses each independently.
-- `control::cmd_type()` defaults to `0x00` (verified) and can be overridden at
+- `gimbal::command::cmd_type()` defaults to `0x00` (verified) and can be overridden at
   runtime with `GIMBAL_CMD_TYPE`. Whether the values are a driven setpoint or a
   speed is not yet characterized, but the UI's hold-to-move at a fixed magnitude
   works well in practice.
@@ -146,7 +147,7 @@ Byte 0 of the `0x07` payload is the enable flag. **While locked, Pilot drives
 only `Gimbal[0]` (the master)** and the aircraft moves camera 2 to follow — so to
 replicate it, engage the lock then drive the master only. (`cmd_set=0x19
 cmd_id=0x06 len=5` is just a periodic status push.) Built in
-[`src/control.rs`](../src/control.rs) (`gimbal_lock_frame`) and used by the web
+[`src/gimbal/command.rs`](../src/gimbal/command.rs) (`lock_frame`) and used by the web
 server's LINK toggle.
 
 ## Observations

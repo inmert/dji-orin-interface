@@ -2,10 +2,14 @@
 //! ep0, the ep0 event stream, and the USB setup packet. Lets the gadget answer
 //! the controller's AOA handshake and expose two bulk endpoints.
 
+use std::fs::OpenOptions;
 use std::io;
-use std::os::fd::BorrowedFd;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::thread::sleep;
+use std::time::Duration;
 
 use super::sys;
+use crate::logln;
 
 // Descriptor/string blob magics and flags (<linux/usb/functionfs.h>).
 const DESCRIPTORS_MAGIC_V2: u32 = 3;
@@ -142,6 +146,62 @@ pub fn stall(ep0: BorrowedFd<'_>, dir_in: bool) -> io::Result<()> {
         Ok(_) => Ok(()),
         Err(e) if e.raw_os_error() == Some(sys::errno::EL2HLT) => Ok(()),
         Err(e) => Err(e),
+    }
+}
+
+/// Open `<ffs_dir>/<name>` read-write, retrying for up to `tries` × 20 ms (the
+/// bulk endpoint files only open once the host has enabled the gadget).
+pub fn open_endpoint(ffs_dir: &str, name: &str, tries: u32) -> io::Result<OwnedFd> {
+    let path = format!("{ffs_dir}/{name}");
+    let mut last = io::Error::other(format!("{path}: no attempts"));
+    for i in 0..tries.max(1) {
+        if i > 0 {
+            sleep(Duration::from_millis(20));
+        }
+        match OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(f) => return Ok(f.into()),
+            Err(e) => last = io::Error::new(e.kind(), format!("{path}: {e}")),
+        }
+    }
+    Err(last)
+}
+
+/// Open the gadget's ep0 and write the descriptor and string blobs, after
+/// which the UDC can be bound.
+pub fn init_ep0(ffs_dir: &str) -> io::Result<OwnedFd> {
+    let ep0 = open_endpoint(ffs_dir, "ep0", 1)?;
+    write_descriptors(ep0.as_fd())?;
+    write_strings(ep0.as_fd())?;
+    Ok(ep0)
+}
+
+/// Read ep0 events forever, calling `on_event` for each. Read errors back off
+/// (50 ms); `ESHUTDOWN`/`ENODEV` (normal with no host attached) stay quiet and
+/// any other error is logged once per distinct errno, not every spin.
+pub fn run_events(ep0: BorrowedFd<'_>, mut on_event: impl FnMut(Event)) -> ! {
+    let mut last_errno = 0;
+    let mut ev = [0u8; EVENT_SIZE * 8];
+    loop {
+        match sys::read(ep0, &mut ev) {
+            Ok(0) => sleep(Duration::from_millis(2)),
+            Ok(n) => {
+                last_errno = 0;
+                for chunk in ev[..n].chunks_exact(EVENT_SIZE) {
+                    let record: [u8; EVENT_SIZE] = chunk.try_into().expect("chunk size");
+                    on_event(Event::parse(&record));
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => {
+                let code = e.raw_os_error().unwrap_or(0);
+                if code != sys::errno::ESHUTDOWN && code != sys::errno::ENODEV && code != last_errno
+                {
+                    logln!("gadget: ep0 read error: {e}");
+                }
+                last_errno = code;
+                sleep(Duration::from_millis(50));
+            }
+        }
     }
 }
 

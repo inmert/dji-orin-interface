@@ -1,16 +1,21 @@
 //! dji-orin-interface — talk the DJI DUML protocol to a Cendence controller
-//! from a Jetson Orin over USB, with no external crates.
+//! from a Jetson Orin over USB.
 //!
-//! * [`duml`] — transport-agnostic DUML framing, checksums and reassembly.
-//! * [`aoa`] — Android Open Accessory constants and the DJI accessory identity.
-//! * [`usb`] — USB transport plumbing (`sys`, `usbfs`, `ffs` submodules).
+//! Organized by layer, with one module per aircraft feature:
+//!
+//! * Transport — [`usb`] (`sys`, `usbfs`, `ffs`) and [`aoa`] (the Android Open
+//!   Accessory handshake, as `host` or `device`).
+//! * Protocol — [`duml`]: transport-agnostic framing, checksums, reassembly.
+//! * Features — [`gimbal`] (camera-mount commands + attitude reports). New
+//!   aircraft features (e.g. props/motors, camera settings) get a sibling
+//!   module of their own with the same `command` / report split.
+//! * [`telemetry`] — the serializable link snapshot for the web UI, folding
+//!   in each feature's decoded reports.
 //! * [`log`] — timestamped line logging shared by the binaries.
-//! * [`control`] — building DUML frames the Orin injects (gimbal move).
-//! * [`telemetry`] — serializable snapshot of the link for the web UI.
 
 pub mod aoa;
-pub mod control;
 pub mod duml;
+pub mod gimbal;
 pub mod log;
 pub mod telemetry;
 pub mod usb;
