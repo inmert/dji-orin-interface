@@ -11,6 +11,11 @@
 #
 # Usage: sudo scripts/run_server.sh [logfile]
 #   Then open http://<orin-ip>:8080/ in a browser on the same network.
+#
+# BRING-UP ORDER: run this with the RC unplugged, power the RC on and let it
+# fully boot, THEN plug it in. An RC that boots with the cable attached locks the
+# Orin's Type-C port into source mode (fusb301 fmode=SRC), and the log never gets
+# past "gadget: BIND". See README "Bring-up order matters".
 set -euo pipefail
 
 G=/sys/kernel/config/usb_gadget
@@ -96,3 +101,5 @@ COMMITTED=1
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo "OK: server gadget bound to $UDC_NAME (18d1:2d00). Log: $LOG"
 echo "   Open the UI at http://${IP:-<orin-ip>}:8080/  (WebSocket on :8081)"
+echo "   Now power the RC on, let it fully boot, THEN plug it into the Orin's USB-C."
+echo "   Expect 'gadget: ENABLE' in $LOG within seconds."

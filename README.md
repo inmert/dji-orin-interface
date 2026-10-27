@@ -180,11 +180,26 @@ follows it); its state is server-side, so a page refresh reflects it.
 ```bash
 cargo build --release
 (cd web && npm ci && npm run build)       # build the React UI into web/dist
-# connect the RC on USB-C, then:
-sudo scripts/run_server.sh                 # logs to server.log
+sudo scripts/run_server.sh                 # logs to server.log; RC NOT plugged in yet
+# power the RC on, let it fully boot, THEN plug its USB-C tablet port into the Orin
 # open http://<orin-ip>:8080/ on a device on the same network
 sudo scripts/restore_gadget.sh             # when done
 ```
+
+**Bring-up order matters.** Start the server first, power the RC on and let it
+fully boot, and only then plug the cable in; `server.log` shows `gadget: ENABLE`
+within seconds. Two ways it fails silently (the log stops at `gadget: BIND`):
+
+- *The RC boots with the cable already attached.* While booting it looks like a
+  sink, so the Orin's Type-C controller locks the port into source (host) mode
+  and never re-checks, and no gadget can attach. Check with
+  `cat /sys/bus/i2c/devices/1-0025/fusb301/fmode`: `SNK(4)` is right, `SRC(1)`
+  is this failure. Unplug, then replug with the RC already booted.
+- *The roles are right (`SNK(4)`) but `/sys/class/udc/*/state` stays `default`.*
+  The RC reset the bus but never enumerated, typically after it sat connected to
+  a gadget that couldn't answer it (the stock `l4t` one, or a wedged teardown).
+  Replugging doesn't clear this; power-cycle the RC with the cable unplugged,
+  then plug in after it boots.
 
 For an **offline UI preview**, run `cd web && npm run dev` and open the printed
 local URL with `?preview=1` appended. Preview mode never opens the control
