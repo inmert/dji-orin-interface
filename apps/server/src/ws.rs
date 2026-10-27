@@ -46,7 +46,13 @@ fn client(stream: TcpStream, cmds: Shared, tele: Tele) {
     // Handshake with a generous timeout; the short poll timeout is set only
     // afterwards, or a client slower than 50 ms to send its upgrade request
     // fails the handshake with WouldBlock and is dropped.
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    if let Err(e) = stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(1))))
+    {
+        logln!("ws: cannot set timeouts for {peer}: {e}");
+        return;
+    }
     let mut ws = match tungstenite::accept(stream) {
         Ok(ws) => ws,
         Err(e) => {

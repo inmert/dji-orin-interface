@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Command, GimbalAttitude } from "../api";
 
 // Camera N (UI) → gimbal device index (DUML). Camera 1 = index 0, camera 2 = 2.
@@ -27,18 +27,37 @@ export function GimbalPad({
 }) {
   const [speed, setSpeed] = useState(200);
   const [held, setHeld] = useState<Dir | null>(null);
+  const heldRef = useRef<Dir | null>(null);
 
   const start = (dir: Dir) => {
+    heldRef.current = dir;
     setHeld(dir);
     const { pitch, yaw } = DIRS[dir](speed);
     send({ cmd: "gimbal", camera, pitch, yaw, active: true });
   };
-  const stop = () => {
-    if (held !== null) {
-      setHeld(null);
-      send({ cmd: "gimbal", camera, pitch: 0, yaw: 0, active: false });
+  const release = useCallback(() => {
+    heldRef.current = null;
+    setHeld(null);
+    send({ cmd: "gimbal", camera, pitch: 0, yaw: 0, active: false });
+  }, [camera, send]);
+  const stop = useCallback(() => {
+    if (heldRef.current !== null) {
+      release();
     }
-  };
+  }, [release]);
+
+  useEffect(() => {
+    const visibility = () => {
+      if (document.hidden) stop();
+    };
+    window.addEventListener("blur", stop);
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      window.removeEventListener("blur", stop);
+      document.removeEventListener("visibilitychange", visibility);
+      stop();
+    };
+  }, [stop]);
 
   // A render helper, not a nested component: a component defined inside
   // render is a new type every render, so React would remount the button
@@ -78,7 +97,7 @@ export function GimbalPad({
         {padBtn("up", "▲")}
         <div />
         {padBtn("left", "◀")}
-        <button className="pad-btn stop-sm" onPointerDown={stop}>
+        <button className="pad-btn stop-sm" onClick={release} aria-label={`Stop camera ${camera}`}>
           ■
         </button>
         {padBtn("right", "▶")}

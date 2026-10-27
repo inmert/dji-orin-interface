@@ -54,11 +54,15 @@ export function useLink() {
     const connect = () => {
       if (closed) return;
       setStatus("connecting");
-      const url = `ws://${location.hostname}:8081`;
+      const scheme = location.protocol === "https:" ? "wss" : "ws";
+      const url = `${scheme}://${location.hostname}:8081`;
       const ws = new WebSocket(url);
       wsRef.current = ws;
-      ws.onopen = () => setStatus("open");
+      ws.onopen = () => {
+        if (!closed && wsRef.current === ws) setStatus("open");
+      };
       ws.onmessage = (ev) => {
+        if (closed || wsRef.current !== ws) return;
         try {
           setTelemetry(JSON.parse(ev.data as string) as Telemetry);
         } catch {
@@ -66,6 +70,7 @@ export function useLink() {
         }
       };
       const reconnect = () => {
+        if (closed || wsRef.current !== ws) return;
         setStatus("closed");
         wsRef.current = null;
         if (!closed) retry = window.setTimeout(connect, 1000);
@@ -78,7 +83,9 @@ export function useLink() {
     return () => {
       closed = true;
       if (retry) clearTimeout(retry);
-      wsRef.current?.close();
+      const ws = wsRef.current;
+      wsRef.current = null;
+      ws?.close();
     };
   }, []);
 
