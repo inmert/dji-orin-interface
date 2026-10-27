@@ -36,6 +36,7 @@ impl Attitude {
         if f.cmd_set != CMD_SET
             || f.cmd_id != CMD_ID_ATTITUDE
             || Device::try_from(f.sender) != Ok(Device::Gimbal)
+            || f.payload.len() < 6
         {
             return None;
         }
@@ -86,10 +87,11 @@ mod tests {
     }
 
     #[test]
-    fn short_payload_reads_zero() {
-        let bytes = frame(duml::addr(Device::Gimbal, 0), &[0x05]);
-        let (f, _) = duml::parse(&bytes).unwrap();
-        let a = Attitude::decode(&f).unwrap();
-        assert_eq!((a.pitch, a.roll, a.yaw), (0, 0, 0));
+    fn rejects_incomplete_attitude_instead_of_inventing_zero_angles() {
+        for len in 0..6 {
+            let bytes = frame(duml::addr(Device::Gimbal, 0), &vec![0x05; len]);
+            let (f, _) = duml::parse(&bytes).unwrap();
+            assert!(Attitude::decode(&f).is_none(), "payload length {len}");
+        }
     }
 }

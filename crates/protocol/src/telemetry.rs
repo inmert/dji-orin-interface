@@ -101,6 +101,20 @@ mod tests {
     }
 
     #[test]
+    fn truncated_report_counts_as_traffic_but_preserves_last_attitude() {
+        let mut t = Telemetry::default();
+        let bytes = attitude_frame(2);
+        let (valid, _) = duml::parse(&bytes).unwrap();
+        t.update(&valid);
+        let mut truncated = valid.clone();
+        truncated.payload = &valid.payload[..1];
+        t.update(&truncated);
+        assert_eq!(t.frames, 2);
+        let attitude = &t.gimbals[&2];
+        assert_eq!((attitude.pitch, attitude.roll, attitude.yaw), (10, 0, -20));
+    }
+
+    #[test]
     fn same_ids_from_two_senders_are_two_streams() {
         let mut t = Telemetry::default();
         for index in [0, 2] {

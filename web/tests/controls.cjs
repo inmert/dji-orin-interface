@@ -71,7 +71,7 @@ sockets[0].onopen();
 link.send({ cmd: 'stop' });
 assert.equal(sockets[1].sent.length, 1);
 assert.equal(sockets[1].url, 'wss://orin:8081');
-const snapshot = frames => ({ data: JSON.stringify({ frames, streams: {}, gimbals: {}, link_up: true }) });
+const snapshot = frames => ({ data: JSON.stringify({ frames, streams: {}, gimbals: {}, link_up: true, linked: false }) });
 sockets[1].onmessage(snapshot(100));
 assert.equal(h.states[2].value, true, 'cached initial snapshot is stale');
 sockets[1].onmessage(snapshot(101));
@@ -89,6 +89,31 @@ tick();
 assert.equal(h.states[2].value, true, 'freshness timer must preserve reset state');
 sockets[1].onmessage(snapshot(2));
 assert.equal(h.states[2].value, false, 'counter must advance again after reset');
+
+// Malformed nested rows previously passed parsing and crashed the render path.
+const good = JSON.parse(snapshot(3).data);
+const malformed = [
+  { ...good, frames: -1 }, { ...good, frames: 3.5 },
+  { ...good, frames: 1e100 }, { ...good, link_up: "true" },
+  { ...good, linked: null }, { ...good, streams: [] },
+  { ...good, streams: { bad: null } },
+  { ...good, streams: { bad: { from: 'Gimbal', to: 'App', count: '1' } } },
+  { ...good, gimbals: { 0: null } },
+  { ...good, gimbals: { 0: { index: 0, pitch: {}, roll: 0, yaw: 0 } } },
+];
+now += 2500;
+tick();
+for (const value of malformed) {
+  sockets[1].onmessage({ data: JSON.stringify(value) });
+  assert.equal(h.states[1].value.frames, 2, 'malformed snapshot preserves last valid data');
+  assert.equal(h.states[2].value, true, 'malformed snapshot cannot restore freshness');
+}
+sockets[1].onmessage({ data: JSON.stringify({ ...good,
+  streams: { route: { from: 'Gimbal', to: 'App', cmd_set: 4, cmd_id: 5, count: 3, last_len: 12 } },
+  gimbals: { 0: { index: 0, pitch: -10, roll: 0, yaw: 20, raw: 'f6 ff', provisional: true } },
+}) });
+assert.equal(h.states[1].value.frames, 3, 'valid populated telemetry still accepted');
+assert.equal(h.states[2].value, false);
 
 for (const disabled of [false, true]) {
   const pad = harness();
