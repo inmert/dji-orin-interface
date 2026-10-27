@@ -82,9 +82,12 @@ export function useLink() {
           if (!next || typeof next.frames !== "number" || !next.gimbals || !next.streams) return;
           if (next.frames !== previousFrames) {
             // Require an advancing counter, not a cached snapshot after reconnect.
-            if (previousFrames !== undefined) {
+            if (previousFrames !== undefined && next.frames > previousFrames) {
               lastFrameChange = Date.now();
               setStale(false);
+            } else {
+              lastFrameChange = 0;
+              setStale(true);
             }
             previousFrames = next.frames;
           }

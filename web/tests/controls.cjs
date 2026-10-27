@@ -16,6 +16,7 @@ function harness() {
       return [value, next => { state.value = next; }];
     },
     useCallback: fn => fn,
+    useMemo: fn => fn(),
     useEffect: fn => effects.push(fn),
   };
   return { react, states, effects };
@@ -82,6 +83,13 @@ assert.equal(h.states[2].value, true, 'repeated cached snapshots become stale');
 sockets[0].onmessage(snapshot(999));
 assert.equal(h.states[1].value.frames, 101);
 
+sockets[1].onmessage(snapshot(1));
+assert.equal(h.states[2].value, true, 'counter reset must not enable movement');
+tick();
+assert.equal(h.states[2].value, true, 'freshness timer must preserve reset state');
+sockets[1].onmessage(snapshot(2));
+assert.equal(h.states[2].value, false, 'counter must advance again after reset');
+
 for (const disabled of [false, true]) {
   const pad = harness();
   const handlers = {};
@@ -128,6 +136,13 @@ for (const disabled of [false, true]) {
       up.props[handler](event(118, 70));
       assert.equal(sent.at(-1).active, false, handler);
     }
+    up.props.onPointerDown(event(70, 70));
+    up.props.onPointerMove(event(118, 70));
+    pad.effects[2](); // Global stop generation changed.
+    assert.equal(sent.at(-1).active, false, 'global stop cancels a held gesture');
+    const afterStop = sent.length;
+    up.props.onPointerMove(event(118, 22));
+    assert.equal(sent.length, afterStop, 'drag after global stop cannot restart movement');
     press(); handlers.blur(); assert.equal(sent.at(-1).active, false);
     press(); document.hidden = true; handlers.visibilitychange(); assert.equal(sent.at(-1).active, false);
     press(); unmount(); assert.equal(sent.at(-1).active, false);
@@ -137,3 +152,13 @@ for (const disabled of [false, true]) {
   }
 }
 console.log('PASS: reconnect isolation, stale telemetry, disabled movement, joystick drag/clamp/dead zone/pointer ownership, keyboard release, stop, blur, hidden tab, unmount');
+
+// Search must accept exactly the hex IDs shown in the table.
+const tableHooks = harness();
+let stateSlot = 0;
+tableHooks.react.useState = value => [stateSlot++ === 0 ? '0x04 / 0x05' : value, () => {}];
+const { StreamsTable } = load('src/telemetry/StreamsTable.tsx', tableHooks.react);
+const table = StreamsTable({ stale: false, telemetry: { frames: 1, streams: {
+  route: { from: 'Gimbal', to: 'App', cmd_set: 4, cmd_id: 5, count: 1, last_len: 12 },
+}, gimbals: {} } });
+assert.ok(JSON.stringify(table).includes('1 of 1') || JSON.stringify(table).includes('[1," of ",1," streams"]'), 'displayed command IDs match search');

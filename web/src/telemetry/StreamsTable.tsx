@@ -9,7 +9,7 @@ export function StreamsTable({ telemetry, stale }: { telemetry: Telemetry; stale
   const rows = useMemo(() => {
     const search = query.trim().toLowerCase();
     return Object.entries(telemetry.streams)
-      .filter(([key, s]) => `${key} ${s.from} ${s.to}`.toLowerCase().includes(search))
+      .filter(([key, s]) => `${key} ${s.from} ${s.to} ${hex2(s.cmd_set)} / ${hex2(s.cmd_id)}`.toLowerCase().includes(search))
       .sort((a, b) => sort === "count" ? b[1].count - a[1].count : a[0].localeCompare(b[0]));
   }, [telemetry.streams, query, sort]);
   return (

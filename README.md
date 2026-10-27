@@ -211,6 +211,20 @@ command up to the speed slider's limit, including diagonal movement. Releasing
 returns it to center and stops movement. Arrow keys provide keyboard control.
 Camera 2's joystick is disabled while linked; stop controls remain available.
 
+### Portal design
+
+The dark instrument-console UI uses React Bits **SpotlightCard** on the metric
+and camera panels and **StarBorder** on the header badge. These are the official
+TypeScript/CSS registry components in `web/src/components`, discovered through
+the shadcn MCP server with `@react-bits` configured in `web/components.json`.
+The source license is preserved in `web/licenses/react-bits-LICENSE.md`.
+
+Spotlights use pointer/focus interaction without ambient animation. The badge
+reveals its border animation on hover; reduced-motion preferences are respected.
+These effects do not process camera video. No new runtime packages are required.
+Preview the design with `cd web && npm run dev` and append `?preview=1` to the
+URL; this never opens the aircraft control WebSocket.
+
 Live video (the two camera feeds) is a separate research spike: the downlink is
 DJI's encrypted/encoded stream, so the UI shows a placeholder for now.
 
