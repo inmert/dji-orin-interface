@@ -21,25 +21,16 @@ WEB_ROOT="$REPO/web/dist"
 LOG="${1:-$REPO/server.log}"
 UDC_NAME="$(ls /sys/class/udc | head -1)"
 
+# shellcheck source-path=SCRIPTDIR source=gadget_lib.sh
+. "$(dirname "$0")/gadget_lib.sh"
+
 DAEMON_PID=""
 COMMITTED=0
 
 cleanup() {
     [ "$COMMITTED" = 1 ] && return
     echo "run_server: startup failed; cleaning up gadget state" >&2
-    [ -n "$DAEMON_PID" ] && kill "$DAEMON_PID" 2>/dev/null || true
-    [ -e "$G/dji/UDC" ] && echo "" > "$G/dji/UDC" 2>/dev/null || true
-    rm -f "$G/dji/configs/c.1/ffs.dji" 2>/dev/null || true
-    mountpoint -q "$FFS" && umount "$FFS" 2>/dev/null || true
-    rmdir "$G/dji/functions/ffs.dji" 2>/dev/null || true
-    rmdir "$G/dji/configs/c.1/strings/0x409" 2>/dev/null || true
-    rmdir "$G/dji/configs/c.1" 2>/dev/null || true
-    rmdir "$G/dji/strings/0x409" 2>/dev/null || true
-    rmdir "$G/dji" 2>/dev/null || true
-    rm -f /run/ffs_capture.pid 2>/dev/null || true
-    if [ -d "$G/l4t" ] && [ -z "$(cat "$G/l4t/UDC" 2>/dev/null)" ]; then
-        echo "$UDC_NAME" > "$G/l4t/UDC" 2>/dev/null && echo "restored l4t gadget" >&2 || true
-    fi
+    teardown_dji "$DAEMON_PID" || true
 }
 
 [ -x "$DAEMON" ] || { echo "build first: cargo build --release   (missing $DAEMON)"; exit 1; }
