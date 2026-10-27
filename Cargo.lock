@@ -88,13 +88,44 @@ dependencies = [
 ]
 
 [[package]]
-name = "dji-orin-interface"
+name = "dji-common"
+version = "0.1.0"
+
+[[package]]
+name = "dji-protocol"
 version = "0.1.0"
 dependencies = [
+ "dji-common",
+ "serde",
+]
+
+[[package]]
+name = "dji-server"
+version = "0.1.0"
+dependencies = [
+ "dji-common",
+ "dji-protocol",
+ "dji-transport",
  "serde",
  "serde_json",
  "tiny_http",
  "tungstenite",
+]
+
+[[package]]
+name = "dji-tools"
+version = "0.1.0"
+dependencies = [
+ "dji-common",
+ "dji-protocol",
+ "dji-transport",
+]
+
+[[package]]
+name = "dji-transport"
+version = "0.1.0"
+dependencies = [
+ "dji-common",
 ]
 
 [[package]]

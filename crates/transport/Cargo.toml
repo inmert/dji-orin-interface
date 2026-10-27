@@ -1,0 +1,13 @@
+[package]
+name = "dji-transport"
+description = "USB transport (usbfs host, FunctionFS gadget) and the Android Open Accessory handshake"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+dji-common.workspace = true
+
+[lints]
+workspace = true

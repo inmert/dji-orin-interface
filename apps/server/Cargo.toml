@@ -1,0 +1,23 @@
+[package]
+name = "dji-server"
+description = "Orin as the DJI app toward the RC, with a web UI (telemetry + gimbal control)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "server"
+path = "src/main.rs"
+
+[dependencies]
+dji-common.workspace = true
+dji-protocol = { workspace = true, features = ["serde"] }
+dji-transport.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tiny_http.workspace = true
+tungstenite.workspace = true
+
+[lints]
+workspace = true

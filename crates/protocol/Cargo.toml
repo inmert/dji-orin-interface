@@ -1,0 +1,25 @@
+[package]
+name = "dji-protocol"
+description = "DJI DUML framing plus per-feature commands and reports (gimbal, telemetry); no I/O"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# Derive `Serialize` on telemetry types (for the web server). Off by default so
+# the protocol crate stays dependency-free for the capture tools.
+serde = ["dep:serde"]
+
+[dependencies]
+dji-common.workspace = true
+serde = { workspace = true, optional = true }
+
+# The benchmark is a plain binary (harness = false): no external bench crate,
+# so `cargo bench` stays offline too.
+[[bench]]
+name = "duml_bench"
+harness = false
+
+[lints]
+workspace = true

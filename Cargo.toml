@@ -1,26 +1,39 @@
-[package]
-name = "dji-orin-interface"
+# Workspace root. Layered like a larger app, scaled to this project:
+#
+#   crates/common     shared: timestamped logging, hex helpers      (no deps)
+#   crates/protocol   domain: DUML framing, gimbal, telemetry       (no I/O; serde optional)
+#   crates/transport  infrastructure: USB (usbfs, FunctionFS), AOA  (libc via externs)
+#   apps/tools        presentation: ffs_capture, aoa_capture, bridge
+#   apps/server       presentation: web UI server (the only crate with web deps)
+#
+# The core crates and the capture tools are dependency-free, so building them
+# (`cargo build -p dji-tools`) never compiles the web stack.
+
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Control a DJI Matrice 210 V1 from a Jetson Orin by speaking the controller's DUML protocol over USB"
+publish = false
 
-# The core (duml/usb/control/telemetry + the capture/bridge binaries) is
-# dependency-free and builds offline — the USB/gadget plumbing uses the system
-# libc via hand-declared externs. The dependencies below are only for the `server`
-# binary's web UI (static HTTP, WebSocket, JSON).
+[workspace.dependencies]
+dji-common = { path = "crates/common" }
+dji-protocol = { path = "crates/protocol" }
+dji-transport = { path = "crates/transport" }
 
-# The benchmark is a plain binary (harness = false): no external bench crate,
-# so `cargo bench` stays offline too.
-[[bench]]
-name = "duml_bench"
-harness = false
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tiny_http = "0.12.0"
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 
-[lints.rust]
+[workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 unused_qualifications = "warn"
 
-[lints.clippy]
+[workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"
 borrow_as_ptr = "warn"
 ptr_as_ptr = "warn"
@@ -29,9 +42,3 @@ format_collect = "warn"
 
 [profile.release]
 opt-level = 2
-
-[dependencies]
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
-tiny_http = "0.12.0"
-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }

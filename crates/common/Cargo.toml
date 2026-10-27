@@ -1,0 +1,10 @@
+[package]
+name = "dji-common"
+description = "Shared utilities: timestamped line logging and hex formatting"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
