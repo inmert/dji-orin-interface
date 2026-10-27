@@ -56,6 +56,7 @@ fn bulk_reader(ffs_dir: String) {
         }
     };
     logln!("bulk: ep1 (OUT, controller->Orin) open; decoding DUML");
+    let log_payloads = std::env::var_os("CAPTURE_HEX").is_some();
     let mut decoder = duml::Decoder::new();
     let mut buf = vec![0u8; 16384];
     loop {
@@ -64,7 +65,17 @@ fn bulk_reader(ffs_dir: String) {
             Ok(n) => {
                 logln!("BULK-IN {n} bytes");
                 decoder.push(&buf[..n]);
-                let count = decoder.drain(|f| logln!("  DUML {f}"));
+                let count = decoder.drain(|f| {
+                    if log_payloads && f.crc_ok {
+                        logln!(
+                            "  DUML {f} type=0x{:02x} | payload={}",
+                            f.cmd_type,
+                            dji_common::hex(f.payload)
+                        );
+                    } else {
+                        logln!("  DUML {f}");
+                    }
+                });
                 if count == 0 {
                     logln!(
                         "  (no complete DUML frame; buffered {} bytes)",

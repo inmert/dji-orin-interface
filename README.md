@@ -239,6 +239,9 @@ DJI's encrypted/encoded stream, so the UI shows a placeholder for now.
 - [x] Web UI — telemetry + gimbal control, over a native Rust server
 - [x] Inject/calibrate gimbal control on hardware — working, both cameras (props off)
 - [x] Camera LINK — native dual-gimbal lock (both move together), hardware-verified
+- [x] Native yaw reset decoded and hardware-verified: each camera independently,
+      both via the master when linked; pitch is preserved
+- [ ] Portal reset buttons per camera and reset-all (protocol builder ready)
 - [ ] Live camera video in the UI (encrypted downlink — research spike)
 - [ ] Send/inject flight commands to the aircraft
 

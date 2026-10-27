@@ -131,8 +131,165 @@ Decoded from captured DJI Pilot traffic and implemented in the `gimbal` module
   runtime with `GIMBAL_CMD_TYPE`. Whether the values are a driven setpoint or a
   speed is not yet characterized, but the UI's hold-to-move at a fixed magnitude
   works well in practice.
-- Also seen: `cmd_set=0x04 cmd_id=0x10` (1-byte mode/recenter enum, sent to both
-  gimbals) and the attitude report `cmd_set=0x04 cmd_id=0x05` the gimbals push up.
+- The attitude report is `cmd_set=0x04 cmd_id=0x05`.
+- **Yaw recenter is verified on the M210.** Use `04/4c FE 01` with command
+  type `40`; it preserves pitch and work mode. Earlier notes suggested
+  `0x04/0x10`, but the available logs do not establish that interpretation.
+  The [community dissector](https://github.com/o-gs/dji-firmware-tools/blob/master/comm_dissector/wireshark/dji-dumlv1-gimbal.lua)
+  names `0x10` "User Params Get", `0x13` "User Params Reset Default", and
+  `0x4c` "Reset And Set Mode". Do not substitute a settings reset for recenter.
+  The SDK decode and live tests below establish the encoding and behavior.
+  The protocol builder is implemented; server and portal reset controls remain
+  to be added.
+
+### Recenter capture checklist (if an app reset control is available)
+
+With props off and the aircraft secured, capture Pilot's recenter action with
+`BRIDGE_HEX_SETS=04,19` and a new log filename. The bridge logs the command-type
+byte as `type=0xNN` as well as receiver, sequence, set/id and payload.
+
+Record each action and its timestamp separately:
+
+1. Cameras unlinked: move camera 1 slightly off-center, then recenter it.
+2. Cameras unlinked: repeat for camera 2.
+3. Cameras linked: recenter the master; record whether the follower recenters
+   and which receivers Pilot addresses.
+
+Retain the exact outgoing bytes and resulting attitude reports. These become
+protocol test fixtures and determine the per-camera and reset-all behavior.
+Replug the CrystalSky before the run so Pilot gets a fresh AOA handshake;
+start the bridge with the RC disconnected, then connect the already-booted RC.
+Use `scripts/restore_gadget.sh` for teardown.
+
+### RC-button observation (2026-10-27)
+
+A passive capture of the physical RC reset button is saved locally as
+`captures/rc-reset/capture.log` (captures are git-ignored). It contains 11,971
+CRC-valid frames over approximately 50.5 seconds. No command injector or Pilot
+bridge was running.
+
+- Camera 1 (`Gimbal[0]`) moved and returned to approximately yaw -47. Near
+  40.155 s, byte 12 of the incoming `0x06/0x05` RC report changed from `00`
+  to `10`, then cleared at 40.359 s. Reported yaw fell from 477 at 40.020 s
+  to -46 at 42.042 s, while pitch stayed near -893 (provisional raw units).
+- Camera 2 (`Gimbal[2]`) stayed near pitch 96 / yaw -216 throughout.
+- The only gimbal command-set routes observed were incoming `0x04/0x05`
+  attitude and `0x04/0x1c` type reports. No `0x04/0x10`, `0x04/0x4c`, or
+  `0x19` frame appeared.
+
+This is evidence of camera 1 yaw recentering, not a captured app-to-gimbal
+reset command. The RC button report is input telemetry to the app and must not
+be replayed toward the aircraft as a reset command. A Pilot bridge capture is
+one way to establish the outgoing command and linked-camera behavior. The
+SDK-derived alternative below is needed because this Pilot UI has no reset.
+For passive payload logging, set `CAPTURE_HEX=1` when running `ffs_capture`.
+
+### RC reset with Pilot bridged (2026-10-27)
+
+The fresh-handshake retry is saved locally at
+`captures/pilot-reset/bridge-retry.log`. Both relay directions were active.
+Camera 1 pitch moved from about 300 to -327; its yaw subsequently returned to
+-47 by approximately 29 s and stayed there through the end of the capture.
+Pitch remained -327 during the yaw return. Camera 2 did not recenter.
+
+No outgoing `0x04` command was captured anywhere in this retry. The only
+outgoing `0x19` commands were the existing unlock pair (`07: 00 00`, `05: 00`)
+at approximately 5.75 s and 15.89 s, before the recenter. Consequently, this
+capture does not establish an app-originated reset command, even with Pilot
+present. It supports yaw-only recenter as the observed RC-button behavior;
+at this stage, full pitch/yaw reset and linked-camera reset were unverified.
+Later live injection results are recorded below.
+
+### SDK reset decode (2026-10-27)
+
+Read-only ADB inspection of the installed Pilot APK (`com.dji.industry.pilot`,
+v2.5.1.17) found `DataGimbalNewResetAndSetMode` and `ReturnCenterCmd` names.
+Its packed DEX did not expose those method bodies through ordinary DEX parsing;
+the APK alone did **not** establish the payload. The older installed GO APK is
+also packed. No tablet software was modified.
+
+DJI's official [Onboard SDK](https://github.com/dji-sdk/Onboard-SDK/tree/118e2825a347499efb8ed253146552c5b9b10779)
+provides an independent encoding reference:
+
+- `osdk-core/modules/inc/payload/dji_gimbal_module.hpp` defines a packed two-byte
+  work-mode/action structure: `FE` preserves the mode, `01` means drone yaw
+  recenter, and `03` means pitch-and-yaw recenter.
+- `osdk-core/modules/src/payload/dji_gimbal_module.cpp` uses `FE 03` for reset,
+  a completion ACK, and gimbal device indices 0 and 2 for the first two payloads.
+- In the shipped ARM64 `libdji-linker.a`, `dji_internal_command.cpp.o` contains
+  the two-byte `V1ProtocolCMD::Gimbal::resetAngle` symbol: `04 4c`.
+- `OsdkProtocol_v1Pack` puts `needAck=2` into bits 5–6 of byte 8, giving command
+  type `40` for an unencrypted request. This differs from our movement packets.
+
+The native SDK packer was called **offline**, with sender App (`02`), sequence
+`1234`, receiver `04` or `44`, command `04/4c`, and the two-byte payload. Its
+output is retained as independent fixtures for `gimbal::command::recenter_frame`:
+
+| Target / action | Complete frame (hex; sequence 0x1234) |
+| --- | --- |
+| Camera 1 yaw | `55 0f 04 a2 02 04 34 12 40 04 4c fe 01 4d 9d` |
+| Camera 1 pitch + yaw | `55 0f 04 a2 02 04 34 12 40 04 4c fe 03 5f be` |
+| Camera 2 yaw | `55 0f 04 a2 02 44 34 12 40 04 4c fe 01 bc f8` |
+| Camera 2 pitch + yaw | `55 0f 04 a2 02 44 34 12 40 04 4c fe 03 ae db` |
+
+SDK encoding alone did not establish M210 V1 acceptance over the RC USB
+route; the live tests below subsequently verified yaw reset. The builder is
+not connected to the server or UI. Testing proceeded with cameras unlinked,
+movement released before each reset, and both cameras' attitudes recorded.
+Independent camera-2 and linked-master tests followed camera 1's test. Full
+pitch-and-yaw reset remains outside the verified feature.
+
+### First live yaw-reset probe (2026-10-27)
+
+With the user's explicit approval, ran passive capture, requested that the user
+pan camera 1 off-center, then sent camera-1 release, the known unlink pair, and
+**one** `04/4c FE 01` request. No retry or injected move was sent. The offline
+example `reset_probe_frames` prints the exact packets without opening USB.
+Local evidence: `captures/reset-probe/camera1-yaw.log` and `sent.jsonl`.
+
+The reset was sent near capture time 51.48 s, sequence `7103`:
+`55 0f 04 a2 02 04 03 71 40 04 4c fe 01 d3 07`.
+Camera 1 had been stable at pitch 52 / yaw -558 before injection; yaw moved
+to -917 by second 52 and settled at -918, while pitch remained 52. Camera 2
+remained near pitch 294 / yaw -342 during the response. Values are provisional
+raw attitude units. No incoming `04/4c` acknowledgement was observed.
+
+The user visually confirmed that camera 1 recentered correctly. Both cameras'
+yaw readings had shifted earlier in the run, before any injection, so the earlier
+-47 center is not a valid fixed reference. Camera-1 yaw reset is now hardware
+validated. Camera-2 and linked reset were verified in the follow-up below.
+Pitch-and-yaw reset remains untested.
+Capture was stopped and the stock USB gadget restored after the observation.
+
+### Camera-2 and linked yaw-reset verification (2026-10-27)
+
+User authorized both tests with props still off and authorized direct movement
+when RC camera selection was unavailable. Evidence is saved locally in
+`captures/reset-probe-followup/capture.log` and `sent.jsonl`. The offline
+`reset_probe_frames` example generates the probe packets; no automatic retries
+were used. Each short pan was followed by an explicit release.
+
+- **Independent camera 2:** after a brief yaw-80 pan, camera 2 was stable near
+  pitch 297 / yaw -338; camera 1 stayed at pitch 60 / yaw -723. At 79.64 s,
+  sent `04/4c FE 01` to receiver `44`, sequence `7203`. Camera 2 returned an
+  ACK at 79.96 s, matching sequence 29187 (`7203`), type `80`, payload `00`.
+  Its yaw crossed the signed-angle wrap during the return and settled near
+  -900; pitch stayed about 296. Camera 1 did not move.
+- **Linked:** engaged the existing native lock at 102.78 s. Camera 2 matched
+  the master's pitch/yaw, confirming that the link was active. A brief master
+  pan left camera 1 at pitch 60 / yaw -707 and camera 2 near 60 / -712.
+  At 121.91 s sent one `04/4c FE 01` to **camera 1 only**, sequence `7303`.
+  Both yaw readings returned: camera 1 settled at -899, camera 2 near -891;
+  both pitches remained near 60. No camera-1 reset ACK was captured.
+
+Yaw reset is now verified for each camera independently and for the linked
+pair via the master. Portal semantics: per-camera reset when independent;
+while linked, either reset control and reset-all target the master only.
+Independent reset-all targets each camera. These actions preserve pitch;
+`FE 03` (pitch-and-yaw reset) remains untested. A missing ACK from camera 1
+must not trigger blind retries or be presented as proof that it did not move.
+After the tests, released both cameras, restored independent mode, stopped
+capture, and restored the stock USB gadget.
 
 ### Camera lock (dual-gimbal follow)
 

@@ -140,7 +140,11 @@ fn relay(
                 decoder.drain(|f| {
                     if f.crc_ok {
                         if hex_sets.contains(&f.cmd_set) {
-                            logln!("{label} {f} | payload={}", hex(f.payload));
+                            logln!(
+                                "{label} {f} type=0x{:02x} | payload={}",
+                                f.cmd_type,
+                                hex(f.payload)
+                            );
                         } else {
                             logln!("{label} {f}");
                         }
