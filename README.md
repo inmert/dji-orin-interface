@@ -186,6 +186,16 @@ sudo scripts/run_server.sh                 # logs to server.log
 sudo scripts/restore_gadget.sh             # when done
 ```
 
+For an **offline UI preview**, run `cd web && npm run dev` and open the printed
+local URL with `?preview=1` appended. Preview mode never opens the control
+WebSocket. `npm test` runs the frontend's offline control-handler and connection
+regression checks. The UI disables movement until the received frame counter
+advances, and marks telemetry stale after two seconds without new frames.
+Hold and drag a camera's joystick to pan and tilt; drag distance scales the
+command up to the speed slider's limit, including diagonal movement. Releasing
+returns it to center and stops movement. Arrow keys provide keyboard control.
+Camera 2's joystick is disabled while linked; stop controls remain available.
+
 Live video (the two camera feeds) is a separate research spike: the downlink is
 DJI's encrypted/encoded stream, so the UI shows a placeholder for now.
 

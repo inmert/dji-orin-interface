@@ -45,15 +45,29 @@ const EMPTY: Telemetry = { link_up: false, frames: 0, gimbals: {}, streams: {}, 
 export function useLink() {
   const [status, setStatus] = useState<Status>("connecting");
   const [telemetry, setTelemetry] = useState<Telemetry>(EMPTY);
+  const [stale, setStale] = useState(true);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
+    // Explicit offline preview never opens a control connection.
+    if (new URLSearchParams(location.search).has("preview")) {
+      setStatus("closed");
+      return;
+    }
     let closed = false;
     let retry: number | undefined;
+    let lastFrameChange = 0;
+    let previousFrames: number | undefined;
+    const freshness = window.setInterval(() => {
+      setStale(Date.now() - lastFrameChange > 2000);
+    }, 500);
 
     const connect = () => {
       if (closed) return;
       setStatus("connecting");
+      setStale(true);
+      lastFrameChange = 0;
+      previousFrames = undefined;
       const scheme = location.protocol === "https:" ? "wss" : "ws";
       const url = `${scheme}://${location.hostname}:8081`;
       const ws = new WebSocket(url);
@@ -64,7 +78,17 @@ export function useLink() {
       ws.onmessage = (ev) => {
         if (closed || wsRef.current !== ws) return;
         try {
-          setTelemetry(JSON.parse(ev.data as string) as Telemetry);
+          const next = JSON.parse(ev.data as string) as Telemetry;
+          if (!next || typeof next.frames !== "number" || !next.gimbals || !next.streams) return;
+          if (next.frames !== previousFrames) {
+            // Require an advancing counter, not a cached snapshot after reconnect.
+            if (previousFrames !== undefined) {
+              lastFrameChange = Date.now();
+              setStale(false);
+            }
+            previousFrames = next.frames;
+          }
+          setTelemetry(next);
         } catch {
           /* ignore malformed frame */
         }
@@ -83,6 +107,7 @@ export function useLink() {
     return () => {
       closed = true;
       if (retry) clearTimeout(retry);
+      clearInterval(freshness);
       const ws = wsRef.current;
       wsRef.current = null;
       ws?.close();
@@ -94,5 +119,5 @@ export function useLink() {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(c));
   }, []);
 
-  return { status, telemetry, send };
+  return { status, telemetry, stale, send };
 }
