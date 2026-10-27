@@ -45,63 +45,60 @@ the specific interfaces each device exposes.
 
 ## Repository layout
 
+A Cargo **workspace**, layered so each crate has one job and dependencies only
+point downward (apps → transport/protocol → common):
+
 ```
-Cargo.toml              Package manifest (web-server deps; core stays dep-free)
-src/lib.rs              Library root (module declarations)
-src/log.rs              Timestamped line logging + hex helpers
-src/duml.rs             DUML framing, checksums, Decoder, build, addressing
-src/usb.rs              USB transport submodule root
-src/usb/sys.rs          Raw kernel ABI (libc calls + usbfs ioctl structs/codes)
-src/usb/usbfs.rs        Host-side USB: device lookup, control/bulk transfers
-src/usb/ffs.rs          Device-side FunctionFS: descriptors, ep0 events/loop
-src/aoa.rs              Android Open Accessory constants + DJI identity
-src/aoa/host.rs         Orin as AOA host (toward a tablet): handshake, discovery
-src/aoa/device.rs       Orin as AOA device (toward the RC): ep0 answers
-src/gimbal.rs           Gimbal feature: ids, Camera addressing
-src/gimbal/command.rs   Gimbal move + camera-lock frames we inject
-src/gimbal/attitude.rs  Gimbal attitude report decode (provisional)
-src/telemetry.rs        Serializable link snapshot for the web UI
-src/bin/ffs_capture.rs  Orin as the app toward the controller
-src/bin/aoa_capture.rs  Orin as the controller toward DJI Pilot
-src/bin/bridge.rs       Transparent DUML MITM (both roles at once)
-src/bin/server/         Orin as the app + web UI:
-  main.rs                 gadget event loop, worker lifecycle
-  state.rs                desired gimbal state + UI command messages
-  injector.rs             streams gimbal commands to the RC (ep2)
-  reader.rs               decodes RC telemetry (ep1)
-  ws.rs / http.rs         WebSocket + static file server
-web/                    Vite + React + TypeScript front end (built to web/dist)
-  src/api.ts              WebSocket link + shared message types
-  src/gimbal/             gimbal pad (per-camera controls)
-  src/telemetry/          telemetry streams table
-tests/duml_roundtrip.rs Black-box integration tests of the public DUML API
-examples/decode_frames.rs  Minimal Decoder usage example
-benches/duml_bench.rs   CRC/scan micro-benchmark (no external harness)
-scripts/run_capture.sh  Bring up the FunctionFS gadget + start ffs_capture
-scripts/run_bridge.sh   Bring up the gadget + start the MITM bridge
-scripts/run_server.sh   Bring up the gadget + start the web control server
-scripts/restore_gadget.sh  Tear it down, restore the stock USB gadget
-docs/                   Protocol and hardware notes
+Cargo.toml                    Workspace root: members, shared versions + lints
+crates/
+  common/                     SHARED — no deps
+    src/log.rs                  timestamped logging (logln!), Hex / hex
+  protocol/                   DOMAIN — pure logic, no I/O (serde optional)
+    src/duml.rs                 DUML framing, checksums, Decoder, build, addressing
+    src/gimbal.rs               gimbal feature: ids, Camera addressing
+    src/gimbal/command.rs       move + camera-lock frames we inject
+    src/gimbal/attitude.rs      attitude report decode (provisional)
+    src/telemetry.rs            link snapshot for the web UI
+    tests/  benches/  examples/ integration tests, CRC/scan bench, Decoder example
+  transport/                  INFRASTRUCTURE — libc via hand-declared externs
+    src/usb.rs                  read/write/errno for endpoint fds
+    src/usb/usbfs.rs            host side: device lookup, control/bulk transfers
+    src/usb/ffs.rs              gadget side: FunctionFS descriptors, ep0 events
+    src/usb/sys.rs              raw kernel ABI (private to the crate)
+    src/aoa.rs                  Android Open Accessory constants + DJI identity
+    src/aoa/host.rs             Orin as AOA host (toward a tablet)
+    src/aoa/device.rs           Orin as AOA device (toward the RC)
+apps/
+  tools/                      PRESENTATION — capture/bridge CLIs
+    src/bin/ffs_capture.rs      Orin as the app toward the controller
+    src/bin/aoa_capture.rs      Orin as the controller toward DJI Pilot
+    src/bin/bridge.rs           transparent DUML MITM (both roles at once)
+  server/                     PRESENTATION — web control server (bin `server`)
+    src/main.rs                 gadget event loop, worker lifecycle
+    src/state.rs                desired gimbal state + UI command messages
+    src/injector.rs             streams gimbal commands to the RC (ep2)
+    src/reader.rs               decodes RC telemetry (ep1)
+    src/ws.rs / http.rs         WebSocket + static file server
+web/                          Vite + React + TypeScript front end (built to web/dist)
+scripts/                      gadget bring-up/teardown + run_{capture,bridge,server}.sh
+docs/                         protocol and hardware notes
+.github/workflows/ci.yml      fmt, clippy, tests, docs, web build
 ```
 
-Each aircraft feature gets its own module (`gimbal` today) with the same split:
-a `command` submodule for frames we inject and a report submodule for what the
-aircraft pushes up, plus a matching folder under `web/src/`. A future feature
-(e.g. props/motors) slots in as a sibling `src/<feature>.rs` + `src/<feature>/`.
+Each aircraft feature gets its own module in `dji-protocol` (`gimbal` today)
+with the same split: a `command` submodule for frames we inject and a report
+submodule for what the aircraft pushes up. A future feature (e.g. props/motors)
+slots in as a sibling `src/<feature>.rs` + `src/<feature>/`.
 
-The project is **Rust** (edition 2024). The **core is dependency-free** — the USB
-and gadget plumbing uses the system libc through a small set of hand-declared
-externs in `usb::sys`, and `duml`/`gimbal`/`telemetry` add nothing. Only the
-web `server` binary pulls crates (`tiny_http`, `tungstenite`, `serde`/
-`serde_json`); the capture/bridge tools and the library still build offline. The
-reusable protocol logic
-lives in the `duml` module (`parse`/`scan`/`build`, the streaming `Decoder`,
-`Frame`, `ParseError`) so the gadget side, the host side, and any future command
-sender share one validated implementation of framing and checksums. Safe, typed
-USB wrappers (`usb::usbfs`, `usb::ffs`) keep raw pointers out of the binaries.
-File
-descriptors are owned by `std::os::fd::OwnedFd` (closed on drop); the gadget's
-bulk reader runs on a `std::thread`.
+The project is **Rust** (edition 2024). `common`, `protocol` and `transport` are
+**dependency-free**, so the capture tools (`cargo build -p dji-tools`) never
+compile the web stack. Only `dji-server` pulls crates (`tiny_http`,
+`tungstenite`, `serde`/`serde_json`), and it turns on `dji-protocol`'s `serde`
+feature to serialize telemetry. Framing and checksums live once in
+`dji_protocol::duml` (`parse`/`scan`/`build`, the streaming `Decoder`), shared
+by the gadget side, the host side, and the command builders. Safe USB wrappers
+(`usb::usbfs`, `usb::ffs`) keep raw pointers inside `dji-transport`; file
+descriptors are `std::os::fd::OwnedFd` (closed on drop).
 
 ## Building
 
@@ -114,8 +111,8 @@ for the `server` binary.
 
 ```bash
 cargo build --release   # binaries in target/release/{ffs_capture,aoa_capture}
-cargo test              # runs the DUML unit tests
-cargo clippy            # lint
+cargo test --workspace  # all unit + integration tests
+cargo clippy --workspace --all-targets   # lint
 ```
 
 ### VSCode

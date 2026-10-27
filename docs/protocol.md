@@ -64,7 +64,7 @@ off  size  field
 - **Frame CRC-16:** reflected CRC-16/CCITT, polynomial `0x1021` (reflected
   `0x8408`), init `0x3692`.
 
-Both are implemented in [`src/duml.rs`](../src/duml.rs) and checked by its unit
+Both are implemented in [`src/duml.rs`](../crates/protocol/src/duml.rs) and checked by its unit
 tests (`cargo test`) against real captured frames.
 
 ### Worked example
@@ -105,8 +105,8 @@ Higher types seen in captures (e.g. `0x0e`, `0x1f`) are not all identified.
 ## Command injection: gimbal control
 
 Decoded from captured DJI Pilot traffic and implemented in the `gimbal` module
-([`src/gimbal.rs`](../src/gimbal.rs), frames in
-[`src/gimbal/command.rs`](../src/gimbal/command.rs)).
+([`src/gimbal.rs`](../crates/protocol/src/gimbal.rs), frames in
+[`src/gimbal/command.rs`](../crates/protocol/src/gimbal/command.rs)).
 
 - **Move command:** `cmd_set = 0x04` (Gimbal), `cmd_id = 0x0c`, sender App
   (`0x02`), receiver Gimbal, `cmd_type = 0x00`. 7-byte payload, little-endian
@@ -147,7 +147,7 @@ Byte 0 of the `0x07` payload is the enable flag. **While locked, Pilot drives
 only `Gimbal[0]` (the master)** and the aircraft moves camera 2 to follow — so to
 replicate it, engage the lock then drive the master only. (`cmd_set=0x19
 cmd_id=0x06 len=5` is just a periodic status push.) Built in
-[`src/gimbal/command.rs`](../src/gimbal/command.rs) (`lock_frame`) and used by the web
+[`src/gimbal/command.rs`](../crates/protocol/src/gimbal/command.rs) (`lock_frame`) and used by the web
 server's LINK toggle.
 
 ## Observations
