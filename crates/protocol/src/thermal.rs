@@ -125,6 +125,20 @@ pub fn display_mode_frame(mode: DisplayMode, seq: u16) -> Vec<u8> {
     settings_frame(&[PARAM_DISPLAY_MODE, 0x00, mode as u8], seq)
 }
 
+/// The camera's reply to one of our settings: the `seq` it answers and the
+/// status byte (`00` accepted, `ff` rejected). `None` for any other frame.
+pub fn ack(f: &Frame) -> Option<(u16, u8)> {
+    let is_ack = f.cmd_type & 0x80 != 0;
+    if !is_ack
+        || (f.cmd_set, f.cmd_id) != (CMD_SET, CMD_ID_SET)
+        || f.sender != duml::addr(Device::Camera, CAMERA_INDEX)
+        || f.receiver != duml::addr(Device::App, 0)
+    {
+        return None;
+    }
+    Some((f.seq, *f.payload.first()?))
+}
+
 /// The fields of the `0xF2` report the UI uses. Offsets follow the
 /// dji-firmware-tools "Camera Tau Param" layout, which matched live data.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -369,6 +383,35 @@ mod tests {
         assert!((r.spot_temp - 21.1).abs() < 0.01);
         assert!(r.spot_valid);
         assert_eq!(r.display_mode, Some(0));
+    }
+
+    #[test]
+    fn acks_are_matched_to_our_settings_only() {
+        let build = |sender, receiver, cmd_type, cmd_id, payload: &[u8]| {
+            let header = Header {
+                sender,
+                receiver,
+                seq: 0x1234,
+                cmd_type,
+                cmd_set: CMD_SET,
+                cmd_id,
+            };
+            duml::build(&header, payload).unwrap()
+        };
+        let cam = duml::addr(Device::Camera, CAMERA_INDEX);
+        let app = duml::addr(Device::App, 0);
+        let decode = |bytes: Vec<u8>| ack(&duml::parse(&bytes).unwrap().0);
+        assert_eq!(
+            decode(build(cam, app, 0xc0, CMD_ID_SET, &[0x00])),
+            Some((0x1234, 0x00))
+        );
+        assert_eq!(
+            decode(build(cam, app, 0xc0, CMD_ID_SET, &[0xff])),
+            Some((0x1234, 0xff))
+        );
+        assert_eq!(decode(build(app, cam, 0x40, CMD_ID_SET, &[0x87])), None); // our request
+        assert_eq!(decode(build(cam, app, 0x00, CMD_ID_REPORT, &[0x00])), None); // a report
+        assert_eq!(decode(build(cam, app, 0xc0, CMD_ID_SET, &[])), None);
     }
 
     #[test]

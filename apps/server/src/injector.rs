@@ -130,10 +130,12 @@ pub fn run(ep2: OwnedFd, cmds: Shared) {
                 ThermalCmd::Measure(m) => thermal::measure_frame(m, seq),
                 ThermalCmd::Area([l, t, r, b]) => thermal::area_frame(l, t, r, b, seq),
             };
+            let frame_seq = seq;
             match send(frame, &mut seq) {
                 Sent::Ok => {
                     cmds.lock().unwrap().thermal_sent();
-                    logln!("injector: thermal {cmd:?} sent");
+                    // The reader logs the camera's ACK under the same seq.
+                    logln!("injector: thermal {cmd:?} sent (seq {frame_seq})");
                 }
                 Sent::Retry => {
                     cmds.lock().unwrap().retry_thermal(&pending[i..]);

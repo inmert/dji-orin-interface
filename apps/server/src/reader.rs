@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use dji_common::logln;
 use dji_protocol::Telemetry;
-use dji_protocol::{duml, rcmux};
+use dji_protocol::{duml, rcmux, thermal};
 use dji_transport::usb;
 
 use crate::video::Feed;
@@ -90,6 +90,14 @@ pub fn run(ep1: OwnedFd, tele: Tele, feeds: Vec<Arc<Feed>>) {
                 decoder.drain(|f| {
                     if f.crc_ok {
                         t.update(f);
+                        if let Some((seq, status)) = thermal::ack(f) {
+                            match status {
+                                0x00 => logln!("thermal: camera accepted seq {seq}"),
+                                _ => logln!(
+                                    "thermal: camera REJECTED seq {seq} (status {status:#04x})"
+                                ),
+                            }
+                        }
                     }
                 });
             }
