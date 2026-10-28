@@ -11,7 +11,8 @@ G=/sys/kernel/config/usb_gadget
 FFS=/dev/ffs-dji
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DAEMON="$REPO/target/release/ffs_capture"
-LOG="${1:-$REPO/capture.log}"
+LOG="${1:-$REPO/logs/capture.log}"
+mkdir -p "$(dirname "$LOG")"
 UDC_NAME="$(ls /sys/class/udc | head -1)"
 
 [ -x "$DAEMON" ] || { echo "build first: cargo build --release   (missing $DAEMON)"; exit 1; }

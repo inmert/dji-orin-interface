@@ -20,7 +20,8 @@ G=/sys/kernel/config/usb_gadget
 FFS=/dev/ffs-dji
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DAEMON="$REPO/target/release/bridge"
-LOG="${1:-$REPO/bridge.log}"
+LOG="${1:-$REPO/logs/bridge.log}"
+mkdir -p "$(dirname "$LOG")"
 UDC_NAME="$(ls /sys/class/udc | head -1)"
 
 # shellcheck source-path=SCRIPTDIR source=gadget_lib.sh

@@ -874,13 +874,44 @@ th {
   font-weight: 500;
   border-bottom: 1px solid var(--line);
 }
+.group-row th {
+  position: static;
+  padding: 0;
+  background: var(--raised);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.group-row button {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}
+.group-row button:hover {
+  background: var(--hover);
+}
+.group-row .chevron {
+  width: 10px;
+  color: var(--muted);
+}
+.group-row .muted {
+  margin-left: auto;
+  font-weight: 400;
+}
 tbody tr:nth-child(even) {
   background: #ffffff05;
 }
 tbody tr:hover {
   background: var(--hover);
 }
-th:nth-child(n + 3),
+thead th:nth-child(n + 3),
 td:nth-child(n + 3) {
   text-align: right;
 }

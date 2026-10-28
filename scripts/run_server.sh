@@ -23,7 +23,8 @@ FFS=/dev/ffs-dji
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DAEMON="$REPO/target/release/server"
 WEB_ROOT="$REPO/web/dist"
-LOG="${1:-$REPO/server.log}"
+LOG="${1:-$REPO/logs/server.log}"
+mkdir -p "$(dirname "$LOG")"
 UDC_NAME="$(ls /sys/class/udc | head -1)"
 
 # shellcheck source-path=SCRIPTDIR source=gadget_lib.sh

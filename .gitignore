@@ -3,6 +3,7 @@
 
 # Capture logs / sample data
 *.log
+logs/
 captures/
 *.pcap
 

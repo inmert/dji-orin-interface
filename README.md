@@ -103,6 +103,7 @@ apps/
     src/ws.rs / http.rs         WebSocket + static file server
 web/                          Vite + React + TypeScript front end (built to web/dist)
 scripts/                      gadget bring-up/teardown + run_{capture,bridge,server}.sh
+logs/                         run-script logs (git-ignored)
 docs/                         protocol and hardware notes
 .github/workflows/ci.yml      fmt, clippy, tests, docs, web build
 ```
@@ -158,7 +159,7 @@ USB-C tablet port):
 
 ```bash
 cargo build --release
-sudo scripts/run_capture.sh            # logs to capture.log
+sudo scripts/run_capture.sh            # logs to logs/capture.log
 # ... plug in / power the controller ...
 sudo scripts/restore_gadget.sh         # when done
 ```
@@ -167,7 +168,7 @@ sudo scripts/restore_gadget.sh         # when done
 Pilot running):
 
 ```bash
-sudo target/release/aoa_capture pilot.log
+sudo target/release/aoa_capture logs/pilot.log
 # tap OK on any USB-accessory prompt on the CrystalSky
 ```
 
@@ -183,7 +184,7 @@ passthrough — nothing is injected.
 ```bash
 cargo build --release
 # plug the CrystalSky into a USB-A port first, then:
-sudo scripts/run_bridge.sh             # logs to bridge.log
+sudo scripts/run_bridge.sh             # logs to logs/bridge.log
 # ... connect the RC on USB-C; tap OK on any USB-accessory prompt ...
 sudo scripts/restore_gadget.sh         # when done
 ```
@@ -203,14 +204,14 @@ follows it); its state is server-side, so a page refresh reflects it.
 ```bash
 cargo build --release
 (cd web && npm ci && npm run build)       # build the React UI into web/dist
-sudo scripts/run_server.sh                 # logs to server.log; RC NOT plugged in yet
+sudo scripts/run_server.sh                 # logs to logs/server.log; RC NOT plugged in yet
 # power the RC on, let it fully boot, THEN plug its USB-C tablet port into the Orin
 # open http://<orin-ip>:8080/ on a device on the same network
 sudo scripts/restore_gadget.sh             # when done
 ```
 
 **Bring-up order matters.** Start the server first, power the RC on and let it
-fully boot, and only then plug the cable in; `server.log` shows `gadget: ENABLE`
+fully boot, and only then plug the cable in; `logs/server.log` shows `gadget: ENABLE`
 within seconds. Two ways it fails silently (the log stops at `gadget: BIND`):
 
 - *The RC boots with the cable already attached.* While booting it looks like a
