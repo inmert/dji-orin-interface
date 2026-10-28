@@ -78,7 +78,7 @@ read-only firmware-version queries, replying with hardware ID `095XE9X00200W8`
 `SDK-v1.1 BETA PM410-03.03.10.18`. Its flight-data broadcast decodes cleanly
 there too (256 frames in 5 s, none rejected), mixing flag words `0x00FF`,
 `0x2FFF`, `0x3000` and the zero-flag 267-byte layout. The web server reads it
-with `OSDK_UART=/dev/ttyUSB0`.
+by default whenever a CP210x adapter is plugged in.
 
 **OSDK activation works (2026-10-28).** OSDK 4.1 rejects this aircraft ("Only
 support M210 V2 series and M300"); OSDK **3.9.0** identifies it (`PM410`,

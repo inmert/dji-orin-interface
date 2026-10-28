@@ -1,4 +1,4 @@
-import { FlightData, FlightLink } from "../api";
+import { FlightData, FlightLink, NO_PORT } from "../api";
 import { Row, Tile, deg, fixed, useAdvancing } from "./Tile";
 
 const pad2 = (n: number) => n.toString().padStart(2, "0");
@@ -110,6 +110,7 @@ export function FlightPanel({ flight, connected }: { flight: FlightLink | undefi
   let note: string;
   if (!flight) note = "This server does not report flight data.";
   else if (!flight.port) note = "UART reader disabled on the server (OSDK_UART=off).";
+  else if (flight.port === NO_PORT) note = "No SDK UART found.";
   else if (!flight.open) note = `Waiting for ${flight.port} to open.`;
   else if (flight.frames === 0) note = `Listening on ${flight.port}; no broadcast received yet.`;
   else note = `${flight.port} · ${flight.frames.toLocaleString()} broadcasts${flight.rejected ? ` · ${flight.rejected} rejected` : ""}`;

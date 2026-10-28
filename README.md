@@ -225,20 +225,27 @@ within seconds. Two ways it fails silently (the log stops at `gadget: BIND`):
   then plug in after it boots.
 
 **Flight telemetry.** The server also reads the aircraft's OSDK UART
-(default `/dev/ttyTHS1`, 230400 baud) and shows its flight-data broadcast in
+(230400 baud) and shows its flight-data broadcast in
 the UI's *Flight telemetry* panel: status and flight mode, attitude, altitude,
 velocity, GPS, battery, obstacle distances, RC sticks, gimbal and compass. The
 port is opened read-only, so nothing can be sent to the aircraft on it. It runs
-independently of the RC link, so it works with the RC unplugged too.
-`OSDK_UART=/dev/ttyUSB0` picks another port (e.g. a 3.3 V USB-TTL adapter),
-`OSDK_UART=off` disables it, and `OSDK_BAUD` changes the rate:
+independently of the RC link, so it works with the RC unplugged too. By
+default it reads a CP210x USB-TTL adapter when one is plugged in (the path that
+works both ways, see [docs/hardware.md](docs/hardware.md)), else the Orin's own
+UART, `/dev/ttyTHS1`. It chooses again each time it reopens the port.
+`OSDK_UART=<port>` fixes the port, `OSDK_UART=off` disables it, and
+`OSDK_BAUD` changes the rate. `sudo` drops variables set before it, so put
+them after:
 
 ```bash
-sudo OSDK_UART=/dev/ttyUSB0 scripts/run_server.sh
+sudo OSDK_UART=/dev/ttyTHS1 scripts/run_server.sh
 ```
 
 **Direct USB link.** The server likewise reads the aircraft's USB API port
-(`/dev/ttyACM0`; mode switch in the PC position) read-only and shows the reports
+(mode switch in the PC position) read-only: the first `ttyACM` that is not the
+CrystalSky. After an aircraft restart its port may not come back, and the
+CrystalSky then takes `ttyACM0`; the panel then says no port was found
+instead of showing the tablet's traffic. It shows the reports
 the aircraft sends there unasked in the *Direct USB link* panel: attitude,
 flight mode, satellite count and the camera 1 gimbal angles. Position, height
 and velocity are shown as unverified until checked with a GPS fix and in

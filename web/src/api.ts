@@ -242,6 +242,9 @@ export function isVideoStatus(value: unknown): value is VideoStatus {
     && counter(value.dropped) && optional(value.error, e => typeof e === "string");
 }
 
+/** The port a direct reader shows while it finds none (NO_PORT in apps/server/src/flight.rs). */
+export const NO_PORT = "no port found";
+
 /** URL of a feed's MJPEG stream; opening it starts that feed on the server. */
 export const videoUrl = (feed: string) =>
   `/video/${encodeURIComponent(feed)}.mjpg`;

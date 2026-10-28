@@ -1,12 +1,13 @@
 //! Direct aircraft readers: decode what the aircraft pushes on its own ports
 //! into the shared [`Telemetry`], independent of (and alongside) the RC link.
 //!
-//! * [`Osdk`] — the OSDK broadcast on the SDK UART (`ttyTHS1`).
-//! * [`Usb`] — the DUML reports on the USB API port (`ttyACM0`).
+//! * [`Osdk`] — the OSDK broadcast on the SDK UART (a CP210x adapter or
+//!   `ttyTHS1`, see [`crate::ports`]).
+//! * [`Usb`] — the DUML reports on the USB API port (a `ttyACM`).
 //!
 //! Receive-only by construction: ports are opened `O_RDONLY` ([`RxPort`]), so
 //! nothing here can send anything to the aircraft. A missing or unplugged port
-//! is retried every few seconds.
+//! is retried every few seconds, choosing the port again each time.
 
 use std::io::ErrorKind;
 use std::thread::sleep;
@@ -19,6 +20,9 @@ use dji_transport::serial::RxPort;
 use crate::reader::Tele;
 
 const RETRY: Duration = Duration::from_secs(5);
+
+/// Shown as the port while an automatic choice finds none.
+pub const NO_PORT: &str = "no port found";
 
 /// A protocol decoder for one port, rebuilt each time the port is opened.
 pub trait Link: Default {
@@ -65,10 +69,23 @@ fn set_open<L: Link>(tele: &Tele, open: bool) {
     *L::state(&mut tele.lock().unwrap()).1 = open;
 }
 
-pub fn run<L: Link>(port: String, baud: u32, tele: Tele) {
-    L::state(&mut tele.lock().unwrap()).0.clone_from(&port);
+/// Read the port `pick` names, choosing again on every (re)open; `None`
+/// means there is none yet.
+pub fn run<L: Link>(pick: impl Fn() -> Option<String>, baud: u32, tele: Tele) {
     let mut last_err = String::new();
     loop {
+        let Some(port) = pick() else {
+            L::state(&mut tele.lock().unwrap())
+                .0
+                .replace_range(.., NO_PORT);
+            if last_err != NO_PORT {
+                logln!("{}: {NO_PORT}; retrying", L::NAME);
+                last_err = NO_PORT.into();
+            }
+            sleep(RETRY);
+            continue;
+        };
+        L::state(&mut tele.lock().unwrap()).0.clone_from(&port);
         match RxPort::open(&port, baud) {
             Ok(rx) => {
                 logln!("{}: reading {port} (receive-only)", L::NAME);

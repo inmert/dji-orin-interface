@@ -1,4 +1,4 @@
-import { GimbalAttitude, UsbLink } from "../api";
+import { GimbalAttitude, NO_PORT, UsbLink } from "../api";
 import { Row, Tile, deg, fixed, useAdvancing } from "./Tile";
 
 /** Gimbal report angles arrive in tenths of a degree. */
@@ -21,6 +21,7 @@ export function UsbPanel({ usb, connected }: { usb: UsbLink | undefined; connect
   let note: string;
   if (!usb) note = "This server does not report the USB link.";
   else if (!usb.port) note = "USB reader disabled on the server (USB_ACM=off).";
+  else if (usb.port === NO_PORT) note = "No aircraft USB port found (check its cable and the mode switch in the PC position; the CrystalSky is ignored).";
   else if (!usb.open) note = `Waiting for ${usb.port} (aircraft USB mode switch in the PC position).`;
   else if (usb.frames === 0) note = `Listening on ${usb.port}; no reports received yet.`;
   else note = `${usb.port} · ${usb.frames.toLocaleString()} frames`;
