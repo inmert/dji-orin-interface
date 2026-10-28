@@ -110,9 +110,11 @@ docs/                         protocol and hardware notes
 ```
 
 Each aircraft feature gets its own module in `dji-protocol` (`gimbal`, `flyc`,
-`thermal`, plus the `osdk` and `rcmux` wire formats) with the same split: frames
-we inject on one side, reports the aircraft pushes up on the other. A future
-feature (e.g. props/motors) slots in as a sibling `src/<feature>.rs` +
+`thermal`); `osdk` and `rcmux` are decode-only wire formats. Where a feature
+goes both ways, the frames we inject are kept apart from the reports the
+aircraft pushes up: `gimbal` has `command` and `attitude` submodules, and
+`thermal` keeps its settings frames and its `Report` decoder in one file. A
+future feature (e.g. props/motors) slots in as a sibling `src/<feature>.rs` +
 `src/<feature>/`.
 
 The project is **Rust** (edition 2024). `common`, `protocol` and `transport` are
@@ -305,8 +307,9 @@ To check a raw capture offline:
 For an **offline UI preview**, run `cd web && npm run dev` and open the printed
 local URL with `?preview=1` appended. Preview mode never opens the control
 WebSocket. `npm test` runs the frontend's offline checks: control handlers and
-connection lifecycle, MJPEG playback (chunking, newest-frame display, cleanup)
-and the thermal click mapping. The UI disables movement until the received frame counter
+connection lifecycle, Streams search, MJPEG playback (chunking, newest-frame
+display, cleanup), the thermal click mapping, and isotherm band validation
+(including empty fields). The UI disables movement until the received frame counter
 advances, and marks telemetry stale after two seconds without new frames.
 Hold and drag a camera's joystick to pan and tilt; drag distance scales the
 command up to the speed slider's limit, including diagonal movement. Releasing

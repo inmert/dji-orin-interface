@@ -59,10 +59,12 @@ With the aircraft's USB mode switch in the **left (PC)** position and the
 aircraft's USB port cabled to an Orin USB-A port, the aircraft enumerates as
 `2ca3:001f` with RNDIS (the Orin gets `192.168.42.3`), mass storage, a vendor
 bulk interface (no driver), and a CDC-ACM serial port, normally
-**`/dev/ttyACM0`**. The number is not stable: after an aircraft restart the port
-can come back as `ttyACM1`, and when the CrystalSky is also plugged in it takes
-whichever number is free, so the server picks the first `ttyACM` that is not the
-CrystalSky (by `/dev/serial/by-id`) and picks again on every reopen. The RNDIS
+**`/dev/ttyACM0`**. The number is not stable: the CrystalSky, when also plugged
+in, takes whichever number is free. After an aircraft restart (2026-10-28) the
+aircraft's USB port did not come back at all (no `2ca3:001f` on the bus), and
+the CrystalSky then held `ttyACM0`. So the server picks the first `ttyACM` that
+is not the CrystalSky (by `/dev/serial/by-id`), picks again on every reopen,
+and reports no port while only the tablet is there. The RNDIS
 network is also where the FPV camera's video comes from, over UDT (see
 [protocol.md](protocol.md#fpv-camera-third-camera)).
 
