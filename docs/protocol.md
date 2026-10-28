@@ -425,8 +425,22 @@ brings up (the Orin is `192.168.42.3`). See
 `osdk-core/advanced-sensing/camera_stream/src/dji_camera_stream_link.cpp` in the
 SDK. No DUML or OpenProtocol command precedes it, and the received bytes go
 straight into FFmpeg's H.264 parser, so this is plain H.264, unlike the
-encrypted RC downlink. Whether the M210 V1's firmware serves this port has not
-been tested. A passive 15-second listen on that network saw no traffic at all.
+encrypted RC downlink. A passive 15-second listen on that network saw no
+traffic at all; the stream only flows once a client connects.
+
+**Verified on the M210 V1 (2026-10-28).** A minimal UDT4 client (SDK's bundled
+`udt` library, built standalone) connected to `192.168.42.2:40003` with no
+other setup, no activation and the RC link up, and received 791 KB in 10 s
+(~630 kbit/s). The bytes are an Annex-B H.264 elementary stream: Main profile,
+**608×448**, ~29 frames/s (290 access-unit delimiters in 10 s). There are **no
+IDR frames**: only SPS/PPS (7 each, about every 1.4 s), non-IDR slices and
+filler NALs, so the encoder uses intra refresh and a decoder must start at an
+SPS and tolerate a partial first picture. Decoded with GStreamer
+(`h264parse ! avdec_h264`) into clear images of the scene in front of the
+aircraft. The client sends only UDT handshake/ACK packets. Note that Ubuntu's
+FFmpeg 8 on the Orin has only the NVIDIA H.264 decoders (`h264_cuvid`,
+`h264_nvv4l2dec`), so the software decode path is GStreamer's `avdec_h264`
+or `openh264dec`.
 
 ## Observations
 

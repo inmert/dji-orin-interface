@@ -272,8 +272,8 @@ DJI's encrypted/encoded stream, so the UI shows a placeholder for now. The
 aircraft also has a third, fixed **FPV camera** at the centre front. The UI
 shows it as camera 03 with its mount's heading and how many status reports it
 sends, but it has no controls. DJI's SDK reads that camera's video as plain
-H.264 over the aircraft's USB network link, which is the more promising route
-to live video (see [docs/protocol.md](docs/protocol.md#fpv-camera-third-camera)).
+H.264 over the aircraft's USB network link; that stream is verified on the
+M210 V1 (608×448, ~29 fps) and is the route to live video in the UI (see [docs/protocol.md](docs/protocol.md#fpv-camera-third-camera)).
 
 ## Status
 
@@ -298,7 +298,8 @@ to live video (see [docs/protocol.md](docs/protocol.md#fpv-camera-third-camera))
 - [x] Portal yaw-recenter per camera and recenter-all, verified on the aircraft
       (2026-10-28; see docs/protocol.md)
 - [x] Third (FPV) camera identified: `Camera[1]`, fixed mount `Gimbal[4]`; shown in the UI
-- [ ] Live camera video in the UI (RC downlink encrypted; FPV H.264 over USB/UDT to be probed)
+- [x] FPV camera video received as H.264 over USB/UDT (192.168.42.2:40003), decoded offline
+- [ ] Live camera video in the UI (RC downlink encrypted; FPV UDT stream is the route)
 - [ ] Send/inject flight commands to the aircraft
 
 ## Acknowledgements
