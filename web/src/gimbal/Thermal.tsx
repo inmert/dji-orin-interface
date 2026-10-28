@@ -188,13 +188,13 @@ export function ThermalPanel({
         <div className="thermal-reading">
           {area ? (
             <>
-              <span className="control-label">SCENE</span>
+              <span className="field-label">Scene</span>
               <strong>{celsius(area.min)} – {celsius(area.max)}</strong>
               <span className="muted">avg {celsius(area.avg)}</span>
             </>
           ) : (
             <>
-              <span className="control-label">SPOT</span>
+              <span className="field-label">Spot</span>
               <strong>
                 {thermal.measure === MEASURE_SPOT && thermal.spot_valid ? celsius(thermal.spot_temp) : "—"}
               </strong>
@@ -203,14 +203,14 @@ export function ThermalPanel({
           <span className="muted">
             {ir
               ? auto
-                ? "Clicking the video measures a spot and turns Auto off"
-                : "Click the video to measure"
-              : "Switch to IR to measure by clicking"}
+                ? "Click the video to measure a spot (turns Auto off)"
+                : "Click the video to measure a spot"
+              : "Switch to IR to measure"}
           </span>
         </div>
       </div>
       <div className="thermal-row">
-        <span className="control-label">RANGE</span>
+        <span className="field-label">Range</span>
         <div className="thermal-modes" role="group" aria-label="Isotherm range">
           <button
             className={auto ? "active" : ""}

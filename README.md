@@ -303,20 +303,17 @@ because a missing acknowledgement does not mean the gimbal did not move.
 
 ### Portal design
 
-The dark instrument-console UI uses React Bits **SpotlightCard** on the metric
-and camera panels and **StarBorder** on the header badge. These are the official
-TypeScript/CSS registry components in `web/src/components`, discovered through
-the shadcn MCP server with `@react-bits` configured in `web/components.json`.
-The source license is preserved in `web/licenses/react-bits-LICENSE.md`.
-
-Spotlights use pointer/focus interaction without ambient animation. The badge
-reveals its border animation on hover; reduced-motion preferences are respected.
-These effects do not process camera video. No new runtime packages are required.
-Preview the design with `cd web && npm run dev` and append `?preview=1` to the
-URL; this never opens the aircraft control WebSocket.
+The portal is laid out like a desktop app: a title bar with the global actions
+(link cameras, recenter all, stop all), a view rail (Cameras, Flight, USB link,
+Streams), and a status bar with link state and frame counts. Only the active
+view is mounted. The styling is flat, with no animation loops, canvas effects,
+blur or gradients, so the page's cost is essentially the video canvases.
+Started videos resume when you come back to the Cameras view. Preview it with
+`cd web && npm run dev` and append `?preview=1` to the URL; this never opens
+the aircraft control WebSocket.
 
 Cameras 01 and 02 show the gimbal cameras' live video from the RC link. The
-aircraft's third, fixed **FPV camera** at the centre front is camera 03, with
+aircraft's third, fixed **FPV camera** at the centre front has its own pane, with
 its mount's heading and the video stream described above (see
 [docs/protocol.md](docs/protocol.md#fpv-camera-third-camera)). It has no controls.
 

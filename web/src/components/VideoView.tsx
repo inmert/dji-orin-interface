@@ -1,6 +1,10 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { VideoStatus, videoUrl } from "../api";
 import { PlaybackState, playMjpeg } from "../video/playback";
+import { Icon } from "./Icon";
+
+/** Feeds the user has started, so switching views and back resumes them. */
+const started = new Set<string>();
 
 const STATE_LABEL: Record<VideoStatus["state"], string> = {
   idle: "Idle",
@@ -46,7 +50,7 @@ export function VideoView({
   /** Overlays drawn above the video (e.g. a reticle). */
   children?: ReactNode;
 }) {
-  const [on, setOn] = useState(false);
+  const [on, setOn] = useState(() => started.has(feed));
   const canvas = useRef<HTMLCanvasElement>(null);
   const [playback, setPlayback] = useState<PlaybackState>("buffering");
   const [visible, setVisible] = useState(!document.hidden);
@@ -68,7 +72,7 @@ export function VideoView({
       : `Waiting for video from ${status.source}`;
   return (
     <div
-      className={`video-placeholder video-view${live ? " live" : ""}${live && onPick ? " pickable" : ""} ${className}`}
+      className={`video-view${live ? " live" : ""}${live && onPick ? " pickable" : ""} ${className}`}
       style={{ aspectRatio: String(aspect) }}
       onClick={(e) => {
         if (!live || !onPick || (e.target as HTMLElement).closest("button")) return;
@@ -79,22 +83,26 @@ export function VideoView({
     >
       {on && <canvas ref={canvas} role="img" aria-label={`${label} live video`} />}
       <div className="viewport-label">
-        <span className="dot" /> {label}
-        <span>{on ? (live ? "LIVE" : playback.toUpperCase()) : "VIDEO OFF"}</span>
+        {label}
+        <span className={live ? "live" : ""}>{on ? (live ? "Live" : playback) : "Off"}</span>
       </div>
       {children}
       {!live && (
         <div className="video-message">
           <strong>{on ? (playback === "reconnecting" ? "Reconnecting" : "Buffering") : "Video is off"}</strong>
-          <span>{on ? message : "Start it to decode this camera's live feed"}</span>
+          <span>{on ? message : "Decoding starts when you start the video"}</span>
         </div>
       )}
       <button
         className="video-toggle"
         disabled={!status}
-        onClick={() => setOn(value => !value)}
+        onClick={() => {
+          if (on) started.delete(feed);
+          else started.add(feed);
+          setOn(!on);
+        }}
       >
-        {on ? "■ Stop video" : "▶ Start video"}
+        <Icon name={on ? "stop" : "play"} /> {on ? "Stop video" : "Start video"}
       </button>
       <span className="viewport-corner">{corner}</span>
     </div>

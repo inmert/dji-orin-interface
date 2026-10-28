@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import SpotlightCard from "../components/SpotlightCard";
+import { Icon } from "../components/Icon";
 import { Command, GimbalAttitude, VideoStatus, ThermalReport } from "../api";
 import { VideoView } from "../components/VideoView";
 import { MODE_THERMAL, ThermalMarker, ThermalPanel, frameToThermal } from "./Thermal";
 
 // Camera N (UI) → gimbal device index (DUML). Camera 1 = index 0, camera 2 = 2.
 const CAMERA_INDEX: Record<number, number> = { 1: 0, 2: 2 };
+const CAMERA_MODEL: Record<number, string> = { 1: "Zenmuse XT2", 2: "Zenmuse Z30" };
 
 // Arrow keys remain available as an accessible alternative to dragging.
 const KEYS: Record<string, [number, number]> = {
@@ -101,42 +102,25 @@ export function GimbalPad({
     stop();
   }, [stopGeneration, stop]);
 
+  const moving = Math.hypot(offset.x, offset.y) > 0.08;
+  const follower = linked && camera === 2;
   return (
-    <SpotlightCard
-      className="camera-card"
-      spotlightColor="#76dfea"
-      intensity={0.08}
-      proximity={30}
-      flare={false}
-    >
-      <div className="card-head">
-        <div className="camera-title">
-          <span className="camera-number">0{camera}</span>
-          <div>
-            <h3>Camera {camera}</h3>
-            <span className="muted">
-              Gimbal {CAMERA_INDEX[camera]} ·{" "}
-              {linked ? (camera === 1 ? "Master" : "Follower") : "Independent"}
-            </span>
-          </div>
-        </div>
-        <span
-          className={`tag${Math.hypot(offset.x, offset.y) > 0.08 ? " moving" : ""}`}
-        >
-          {Math.hypot(offset.x, offset.y) > 0.08
-            ? "Moving"
-            : disabled
-              ? linked && camera === 2
-                ? "Linked"
-                : "Standby"
-              : "Ready"}
+    <section className="pane camera-pane" aria-label={`Camera ${camera}`}>
+      <header className="pane-head">
+        <h2>Camera {camera}</h2>
+        <span className="muted">
+          {CAMERA_MODEL[camera]} · Gimbal {CAMERA_INDEX[camera]} ·{" "}
+          {linked ? (camera === 1 ? "Master" : "Follower") : "Independent"}
         </span>
-      </div>
+        <span className={`tag${moving ? " moving" : disabled ? "" : " ready"}`}>
+          {moving ? "Moving" : disabled ? (follower ? "Linked" : "Standby") : "Ready"}
+        </span>
+      </header>
       <VideoView
         feed={`cam${camera}`}
         status={video}
-        label={`CAMERA 0${camera}`}
-        corner={`M210 / CAM 0${camera} · 640×360`}
+        label={`CAM ${camera}`}
+        corner="640×360"
         aspect={16 / 9}
         onPick={
           thermalView && !disabled
@@ -150,118 +134,84 @@ export function GimbalPad({
         {thermalView && thermal ? (
           <ThermalMarker thermal={thermal} />
         ) : (
-          <div className="reticle" aria-hidden="true">
-            <span>+</span>
-          </div>
+          <div className="reticle" aria-hidden="true" />
         )}
       </VideoView>
       {thermal && <ThermalPanel thermal={thermal} auto={thermalAuto} disabled={disabled} send={send} />}
       <div className="camera-controls">
-        <div className="direction-controls">
-          <span className="control-label">GIMBAL JOYSTICK</span>
-          <button
-            className={`joystick${heldRef.current ? " engaged" : ""}`}
-            disabled={disabled}
-            aria-label={`Camera ${camera} joystick`}
-            aria-describedby={`joystick-help-${camera}`}
-            onPointerDown={(e) => {
-              if (disabled || e.button !== 0 || heldRef.current) return;
+        <button
+          className={`joystick${heldRef.current ? " engaged" : ""}`}
+          disabled={disabled}
+          aria-label={`Camera ${camera} joystick`}
+          aria-describedby={`joystick-help-${camera}`}
+          title="Hold and drag to pan and tilt; farther is faster. Arrow keys also work."
+          onPointerDown={(e) => {
+            if (disabled || e.button !== 0 || heldRef.current) return;
+            e.preventDefault();
+            e.currentTarget.focus();
+            e.currentTarget.setPointerCapture(e.pointerId);
+            const bounds = e.currentTarget.getBoundingClientRect();
+            pointerRef.current = {
+              id: e.pointerId,
+              x: e.clientX,
+              y: e.clientY,
+              radius: bounds.width / 2 - 22,
+            };
+            heldRef.current = true;
+            move(0, 0);
+          }}
+          onPointerMove={(e) => {
+            const pointer = pointerRef.current;
+            if (disabled || !pointer || pointer.id !== e.pointerId) return;
+            move(
+              (e.clientX - pointer.x) / pointer.radius,
+              (e.clientY - pointer.y) / pointer.radius,
+            );
+          }}
+          onPointerUp={(e) => {
+            if (pointerRef.current?.id === e.pointerId) stop();
+          }}
+          onPointerCancel={(e) => {
+            if (pointerRef.current?.id === e.pointerId) stop();
+          }}
+          onLostPointerCapture={(e) => {
+            if (pointerRef.current?.id === e.pointerId) stop();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              stop();
+              return;
+            }
+            const direction = KEYS[e.key];
+            if (!direction) return;
+            e.preventDefault();
+            if (disabled || heldRef.current || e.repeat) return;
+            keyRef.current = e.key;
+            heldRef.current = true;
+            move(...direction);
+          }}
+          onKeyUp={(e) => {
+            if (keyRef.current === e.key) {
               e.preventDefault();
-              e.currentTarget.focus();
-              e.currentTarget.setPointerCapture(e.pointerId);
-              const bounds = e.currentTarget.getBoundingClientRect();
-              pointerRef.current = {
-                id: e.pointerId,
-                x: e.clientX,
-                y: e.clientY,
-                radius: bounds.width / 2 - 22,
-              };
-              heldRef.current = true;
-              move(0, 0);
+              stop();
+            }
+          }}
+          onBlur={stop}
+        >
+          <span className="joystick-axis horizontal" aria-hidden="true" />
+          <span className="joystick-axis vertical" aria-hidden="true" />
+          <span
+            className="joystick-thumb"
+            aria-hidden="true"
+            style={{
+              transform: `translate(${offset.x * 48}px, ${offset.y * 48}px)`,
             }}
-            onPointerMove={(e) => {
-              const pointer = pointerRef.current;
-              if (disabled || !pointer || pointer.id !== e.pointerId) return;
-              move(
-                (e.clientX - pointer.x) / pointer.radius,
-                (e.clientY - pointer.y) / pointer.radius,
-              );
-            }}
-            onPointerUp={(e) => {
-              if (pointerRef.current?.id === e.pointerId) stop();
-            }}
-            onPointerCancel={(e) => {
-              if (pointerRef.current?.id === e.pointerId) stop();
-            }}
-            onLostPointerCapture={(e) => {
-              if (pointerRef.current?.id === e.pointerId) stop();
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                stop();
-                return;
-              }
-              const direction = KEYS[e.key];
-              if (!direction) return;
-              e.preventDefault();
-              if (disabled || heldRef.current || e.repeat) return;
-              keyRef.current = e.key;
-              heldRef.current = true;
-              move(...direction);
-            }}
-            onKeyUp={(e) => {
-              if (keyRef.current === e.key) {
-                e.preventDefault();
-                stop();
-              }
-            }}
-            onBlur={stop}
-          >
-            <span className="joystick-axis horizontal" aria-hidden="true" />
-            <span className="joystick-axis vertical" aria-hidden="true" />
-            <span className="joystick-ring" aria-hidden="true" />
-            <span
-              className="joystick-thumb"
-              aria-hidden="true"
-              style={{
-                transform: `translate(${offset.x * 48}px, ${offset.y * 48}px)`,
-              }}
-            >
-              +
-            </span>
-          </button>
-          <span id={`joystick-help-${camera}`} className="hold-hint">
-            {linked && camera === 2
-              ? "Following camera 1"
-              : "Hold & drag · release to stop"}
-          </span>
-          <span className="joystick-key-hint">Arrow keys also supported</span>
-          <div className="pad-actions">
-            <button
-              className="joystick-stop"
-              onClick={release}
-              aria-label={`Stop camera ${camera}`}
-            >
-              ■ Stop
-            </button>
-            <button
-              className="recenter"
-              disabled={disabled}
-              onClick={() => {
-                release();
-                send({ cmd: "reset", camera });
-              }}
-              aria-label={`Recenter camera ${camera} yaw`}
-              title={linked ? "Linked: recenters both cameras via camera 1" : "Return yaw to center; pitch is kept"}
-            >
-              ⟲ Recenter
-            </button>
-          </div>
-        </div>
+          />
+        </button>
         <div className="control-settings">
-          <label className="speed">
-            <span className="control-label">
-              MOVEMENT SPEED <output>{speed}</output>
+          <label className="field">
+            <span className="field-label">
+              Speed <output>{speed}</output>
             </span>
             <input
               type="range"
@@ -272,15 +222,8 @@ export function GimbalPad({
               disabled={disabled}
               onChange={(e) => setSpeed(Number(e.target.value))}
             />
-            <span className="range-labels">
-              <span>Precise</span>
-              <span>Fast</span>
-            </span>
           </label>
-          <div className="attitude-heading">
-            <span className="control-label">ATTITUDE</span>
-          </div>
-          <div className="attitude">
+          <div className="readout" title={attitude ? "Reported by the gimbal" : "Waiting for attitude data"}>
             {(["pitch", "roll", "yaw"] as const).map((axis) => (
               <div key={axis}>
                 <span>{axis}</span>
@@ -289,13 +232,32 @@ export function GimbalPad({
               </div>
             ))}
           </div>
-          <span className="attitude-note">
-            {attitude
-              ? "Reported by the gimbal"
-              : "Waiting for attitude data"}
+          <div className="pad-actions">
+            <button
+              className="tool"
+              onClick={release}
+              aria-label={`Stop camera ${camera}`}
+            >
+              <Icon name="stop" /> Stop
+            </button>
+            <button
+              className="tool"
+              disabled={disabled}
+              onClick={() => {
+                release();
+                send({ cmd: "reset", camera });
+              }}
+              aria-label={`Recenter camera ${camera} yaw`}
+              title={linked ? "Linked: recenters both cameras via camera 1" : "Return yaw to center; pitch is kept"}
+            >
+              <Icon name="recenter" /> Recenter
+            </button>
+          </div>
+          <span id={`joystick-help-${camera}`} className="hint">
+            {follower ? "Following camera 1" : "Drag the pad or use arrow keys"}
           </span>
         </div>
       </div>
-    </SpotlightCard>
+    </section>
   );
 }

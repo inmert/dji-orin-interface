@@ -115,28 +115,22 @@ export function FlightPanel({ flight, connected }: { flight: FlightLink | undefi
   else note = `${flight.port} · ${flight.frames.toLocaleString()} broadcasts${flight.rejected ? ` · ${flight.rejected} rejected` : ""}`;
 
   return (
-    <section id="flight" className="flight-section" aria-labelledby="flight-heading">
-      <div className="section-heading">
-        <div>
-          <h2 id="flight-heading">Flight telemetry <span className="count-badge">UART</span></h2>
-          <p>Read-only flight data from the aircraft's SDK port. {note}</p>
-        </div>
-        <span className={`feed-state${fresh ? " live" : ""}`}>
-          <span className="dot" />
-          {fresh ? "Receiving data" : flight && flight.frames > 0 ? "Stale" : "Awaiting data"}
+    <section className="page" aria-labelledby="flight-heading">
+      <header className="view-head">
+        <h1 id="flight-heading">Flight telemetry</h1>
+        <span className="muted">OSDK UART · read-only · {note}</span>
+        <span className={`tag${fresh ? " ready" : ""}`}>
+          {fresh ? "Receiving" : flight && flight.frames > 0 ? "Stale" : "Waiting"}
         </span>
-      </div>
+      </header>
       {flight && flight.frames > 0 ? (
         <div className={fresh ? "" : "flight-stale"}>
           <Tiles d={flight.data} />
         </div>
       ) : (
-        <div className="table-card">
-          <div className="table-empty">
-            <span>≋</span>
-            <strong>No flight data yet</strong>
-            <p>Decoded attitude, altitude, GPS and status appear here once the aircraft's SDK UART broadcasts.</p>
-          </div>
+        <div className="empty">
+          <strong>No flight data yet</strong>
+          <span>Attitude, altitude, GPS and status appear once the SDK UART broadcasts.</span>
         </div>
       )}
     </section>

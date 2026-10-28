@@ -26,19 +26,16 @@ export function UsbPanel({ usb, connected }: { usb: UsbLink | undefined; connect
   else note = `${usb.port} · ${usb.frames.toLocaleString()} frames`;
 
   return (
-    <section id="usb" className="flight-section" aria-labelledby="usb-heading">
-      <div className="section-heading">
-        <div>
-          <h2 id="usb-heading">Direct USB link <span className="count-badge">USB</span></h2>
-          <p>Read-only reports from the aircraft's USB API port. {note}</p>
-        </div>
-        <span className={`feed-state${fresh ? " live" : ""}`}>
-          <span className="dot" />
-          {fresh ? "Receiving data" : usb && usb.frames > 0 ? "Stale" : "Awaiting data"}
+    <section className="page" aria-labelledby="usb-heading">
+      <header className="view-head">
+        <h1 id="usb-heading">Direct USB link</h1>
+        <span className="muted">USB API port · read-only · {note}</span>
+        <span className={`tag${fresh ? " ready" : ""}`}>
+          {fresh ? "Receiving" : usb && usb.frames > 0 ? "Stale" : "Waiting"}
         </span>
-      </div>
+      </header>
       {usb && usb.frames > 0 ? (
-        <div className={`usb-grid${fresh ? "" : " flight-stale"}`}>
+        <div className={`flight-grid${fresh ? "" : " flight-stale"}`}>
           <Tile label="ATTITUDE" value={o ? deg(o.yaw) : "—"} note="Heading (yaw)">
             {o && <Row label="Roll" value={deg(o.roll)} />}
             {o && <Row label="Pitch" value={deg(o.pitch)} />}
@@ -58,12 +55,9 @@ export function UsbPanel({ usb, connected }: { usb: UsbLink | undefined; connect
           </Tile>
         </div>
       ) : (
-        <div className="table-card">
-          <div className="table-empty">
-            <span>≋</span>
-            <strong>No USB reports yet</strong>
-            <p>Attitude, flight mode and gimbal angles appear here when the aircraft's USB API port is connected.</p>
-          </div>
+        <div className="empty">
+          <strong>No USB reports yet</strong>
+          <span>Attitude, flight mode and gimbal angles appear once the USB API port is connected.</span>
         </div>
       )}
     </section>
