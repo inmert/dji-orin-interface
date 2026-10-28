@@ -80,6 +80,17 @@ there too (256 frames in 5 s, none rejected), mixing flag words `0x00FF`,
 `0x2FFF`, `0x3000` and the zero-flag 267-byte layout. The web server reads it
 with `OSDK_UART=/dev/ttyUSB0`.
 
+**OSDK activation works (2026-10-28).** OSDK 4.1 rejects this aircraft ("Only
+support M210 V2 series and M300"); OSDK **3.9.0** identifies it (`PM410`,
+firmware 3.3.10.18) and activates. Activation answered `NEW_DEVICE_ERROR` until
+the aircraft's USB port was connected to a computer running **DJI Assistant 2
+for Matrice, logged in and online**. With DJI Pilot or GO 4 online on the RC
+alone it never succeeded. After that the SDK's telemetry subscription worked
+(five packages at 1–200 Hz). DJI's OSDK 4.1 Linux sample also enables "take-off
+permission while USB is plugged in" after activating; it was kept from doing so
+by pointing its `acm_port` at a nonexistent device. OSDK 3.9.0's sample does not
+send it.
+
 **Through the Orin's own UART it only receives.** Wired directly to the 40-pin
 header (pin 8 TX = `/dev/ttyTHS1`, pin 10 RX, pin 6 ground), the broadcast
 arrives but the flight controller never acknowledges anything, including the
