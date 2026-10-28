@@ -266,8 +266,13 @@ These effects do not process camera video. No new runtime packages are required.
 Preview the design with `cd web && npm run dev` and append `?preview=1` to the
 URL; this never opens the aircraft control WebSocket.
 
-Live video (the two camera feeds) is a separate research spike: the downlink is
-DJI's encrypted/encoded stream, so the UI shows a placeholder for now.
+Live video (the camera feeds) is a separate research spike: the RC downlink is
+DJI's encrypted/encoded stream, so the UI shows a placeholder for now. The
+aircraft also has a third, fixed **FPV camera** at the centre front. The UI
+shows it as camera 03 with its mount's heading and how many status reports it
+sends, but it has no controls. DJI's SDK reads that camera's video as plain
+H.264 over the aircraft's USB network link, which is the more promising route
+to live video (see [docs/protocol.md](docs/protocol.md#fpv-camera-third-camera)).
 
 ## Status
 
@@ -289,7 +294,8 @@ DJI's encrypted/encoded stream, so the UI shows a placeholder for now.
 - [ ] OSDK UART commands: aircraft never acks them
 - [x] Portal yaw-recenter buttons per camera and recenter-all (built and unit-tested;
       not yet pressed on the aircraft through the portal)
-- [ ] Live camera video in the UI (encrypted downlink — research spike)
+- [x] Third (FPV) camera identified: `Camera[1]`, fixed mount `Gimbal[4]`; shown in the UI
+- [ ] Live camera video in the UI (RC downlink encrypted; FPV H.264 over USB/UDT to be probed)
 - [ ] Send/inject flight commands to the aircraft
 
 ## Acknowledgements

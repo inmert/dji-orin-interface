@@ -388,6 +388,27 @@ The web server decodes these frames read-only
 *Direct USB link* panel. In a live check, the panel's attitude matched the UART
 panel's attitude at the same moment (143.1°, 2.3°, 1.3°).
 
+## FPV camera (third camera)
+
+The M210 has a fixed centre-front FPV camera besides the two gimbal cameras.
+On the RC link it is **`Camera[1]`** (the gimbal cameras are `Camera[0]` and
+`Camera[2]`). It sends the same 37-byte `0x02/0x80` status push as the other two,
+plus a 100-byte `0x02/0xf2` that only it sends; it does not send the `0x02/0x81`
+and `0x02/0x87` reports the gimbal cameras do. Its mount reports as
+**`Gimbal[4]`**: a 12-byte `0x04/0x05` whose yaw equals the aircraft heading
+(143.0° against the flight controller's 142.9°) and whose pitch stays 0, so it is
+fixed to the airframe. It does not appear on `ttyACM0` unasked.
+
+DJI's Onboard SDK 4.1 reads this camera's video, for aircraft other than the M300,
+by opening a **UDT** connection (a reliable stream protocol over UDP) to
+**`192.168.42.2:40003`**: the aircraft's end of the network its USB API port
+brings up (the Orin is `192.168.42.3`). See
+`osdk-core/advanced-sensing/camera_stream/src/dji_camera_stream_link.cpp` in the
+SDK. No DUML or OpenProtocol command precedes it, and the received bytes go
+straight into FFmpeg's H.264 parser, so this is plain H.264, unlike the
+encrypted RC downlink. Whether the M210 V1's firmware serves this port has not
+been tested. A passive 15-second listen on that network saw no traffic at all.
+
 ## Observations
 
 - From the controller the Orin receives mostly ~716-byte high-entropy frames

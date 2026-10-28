@@ -2,6 +2,7 @@ import { useState } from "react";
 import SpotlightCard from "./components/SpotlightCard";
 import StarBorder from "./components/StarBorder";
 import { useLink } from "./api";
+import { FpvCard } from "./gimbal/FpvCard";
 import { GimbalPad } from "./gimbal/GimbalPad";
 import { FlightPanel } from "./telemetry/FlightPanel";
 import { StreamsTable } from "./telemetry/StreamsTable";
@@ -182,7 +183,7 @@ export function App() {
             <div className="section-heading">
               <div>
                 <h2 id="camera-heading">
-                  Camera control <span className="count-badge">02</span>
+                  Camera control <span className="count-badge">03</span>
                 </h2>
                 <p>
                   Hold and drag to pan and tilt. Drag farther for faster
@@ -232,6 +233,7 @@ export function App() {
                 send={send}
               />
             </div>
+            <FpvCard telemetry={telemetry} stale={!ready} />
           </section>
           <FlightPanel flight={telemetry.flight} connected={status === "open"} />
           <UsbPanel usb={telemetry.usb} connected={status === "open"} />

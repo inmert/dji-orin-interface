@@ -527,6 +527,16 @@ h3 {
   background: #154039;
   border-color: #3e977d;
 }
+.fpv-card {
+  margin-top: 20px;
+  padding: 19px 22px 22px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0e1820;
+}
+.fpv-heading {
+  margin-bottom: 16px;
+}
 .video-placeholder {
   position: relative;
   height: 240px;
