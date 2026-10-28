@@ -213,13 +213,27 @@ export function GimbalPad({
               : "Hold & drag · release to stop"}
           </span>
           <span className="joystick-key-hint">Arrow keys also supported</span>
-          <button
-            className="joystick-stop"
-            onClick={release}
-            aria-label={`Stop camera ${camera}`}
-          >
-            ■ Stop
-          </button>
+          <div className="pad-actions">
+            <button
+              className="joystick-stop"
+              onClick={release}
+              aria-label={`Stop camera ${camera}`}
+            >
+              ■ Stop
+            </button>
+            <button
+              className="recenter"
+              disabled={disabled}
+              onClick={() => {
+                release();
+                send({ cmd: "reset", camera });
+              }}
+              aria-label={`Recenter camera ${camera} yaw`}
+              title={linked ? "Linked: recenters both cameras via camera 1" : "Return yaw to center; pitch is kept"}
+            >
+              ⟲ Recenter
+            </button>
+          </div>
         </div>
         <div className="control-settings">
           <label className="speed">
@@ -242,19 +256,19 @@ export function GimbalPad({
           </label>
           <div className="attitude-heading">
             <span className="control-label">ATTITUDE</span>
-            <span className="provisional">Provisional</span>
           </div>
           <div className="attitude">
             {(["pitch", "roll", "yaw"] as const).map((axis) => (
               <div key={axis}>
                 <span>{axis}</span>
-                <strong>{attitude ? attitude[axis] : "—"}</strong>
+                {/* The gimbal reports tenths of a degree. */}
+                <strong>{attitude ? `${(attitude[axis] / 10).toFixed(1)}°` : "—"}</strong>
               </div>
             ))}
           </div>
           <span className="attitude-note">
             {attitude
-              ? "Reported values · uncalibrated"
+              ? "Reported by the gimbal"
               : "Waiting for attitude data"}
           </span>
         </div>

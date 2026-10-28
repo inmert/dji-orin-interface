@@ -189,6 +189,15 @@ export function App() {
                   movement.
                 </p>
               </div>
+              <div className="camera-actions">
+              <button
+                className="link-toggle"
+                disabled={!ready}
+                onClick={() => send({ cmd: "reset" })}
+                title={linked ? "Linked: recenters both via camera 1" : "Recenter yaw on both cameras"}
+              >
+                <span>⟲</span> Recenter all
+              </button>
               <button
                 className={`link-toggle${linked ? " on" : ""}`}
                 disabled={!ready}
@@ -197,6 +206,7 @@ export function App() {
               >
                 <span>↔</span> {linked ? "Unlink cameras" : "Link cameras"}
               </button>
+              </div>
             </div>
             {!ready && (
               <div className="connection-notice" role="status">
@@ -231,7 +241,7 @@ export function App() {
               <span className="dot" /> ORIN INTERFACE{" "}
               <span className="footer-divider">/</span> M210 V1
             </span>
-            <span>Gimbal control only · Attitude decoding is provisional</span>
+            <span>Gimbal control only · Flight data is read-only</span>
           </footer>
         </main>
       </div>

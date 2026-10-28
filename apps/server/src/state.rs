@@ -21,6 +21,8 @@ pub struct Commands {
     /// A pending lock change for the injector to emit once: `Some(true)` engages
     /// the lock, `Some(false)` releases it.
     pub lock_pending: Option<bool>,
+    /// Yaw recenters for the injector to emit once each, in order, no repeats.
+    pub reset_pending: Vec<Camera>,
 }
 
 pub type Shared = Arc<Mutex<Commands>>;
@@ -47,6 +49,27 @@ impl Commands {
     pub fn release_all(&mut self) {
         self.cam1.active = false;
         self.cam2.active = false;
+    }
+
+    /// Queue a yaw recenter (the hardware-verified native reset) for `target`
+    /// (`None` = both cameras), releasing any movement on the targets first.
+    ///
+    /// While linked, the aircraft mirrors camera 2 from camera 1, so every
+    /// reset goes to the master only; that resets the pair (verified on the
+    /// M210). Independent, each camera is reset on its own.
+    pub fn request_reset(&mut self, target: Option<Camera>) {
+        let cams: &[Camera] = match (self.linked, target) {
+            (true, _) => &[Camera::One],
+            (false, Some(Camera::One)) => &[Camera::One],
+            (false, Some(Camera::Two)) => &[Camera::Two],
+            (false, None) => &[Camera::One, Camera::Two],
+        };
+        for &cam in cams {
+            self.set(cam, GimbalMove::default());
+            if !self.reset_pending.contains(&cam) {
+                self.reset_pending.push(cam);
+            }
+        }
     }
 
     /// Enter/leave linked mode: queue the native lock command and, when linking,
@@ -76,6 +99,11 @@ pub enum WsCommand {
     },
     /// Engage/release the aircraft's native camera lock (camera 2 follows 1).
     Link { on: bool },
+    /// Recenter yaw on one camera (1 or 2), or both when `camera` is absent.
+    Reset {
+        #[serde(default)]
+        camera: Option<u8>,
+    },
     /// Release every gimbal immediately.
     Stop,
 }
@@ -98,6 +126,17 @@ pub fn handle(text: &str, cmds: &Shared) {
         Ok(WsCommand::Link { on }) => {
             cmds.lock().unwrap().set_linked(on);
             logln!("link: {}", if on { "on" } else { "off" });
+        }
+        Ok(WsCommand::Reset { camera }) => {
+            let target = match camera {
+                None => None,
+                Some(n) => match Camera::from_number(n) {
+                    Some(cam) => Some(cam),
+                    None => return logln!("ws: reset: no camera {n}"),
+                },
+            };
+            cmds.lock().unwrap().request_reset(target);
+            logln!("reset: queued for {camera:?} (None = all)");
         }
         Ok(WsCommand::Stop) => cmds.lock().unwrap().release_all(),
         Err(e) => logln!("ws: bad command: {e}"),
@@ -152,6 +191,33 @@ mod tests {
     }
 
     #[test]
+    fn independent_resets_target_the_named_cameras_and_release_them() {
+        let mut c = Commands {
+            cam2: GimbalMove {
+                pitch: 5,
+                yaw: 5,
+                active: true,
+            },
+            ..Default::default()
+        };
+        c.request_reset(Some(Camera::Two));
+        assert_eq!(c.reset_pending, [Camera::Two]);
+        assert!(!c.cam2.active); // released before the reset goes out
+        c.request_reset(None);
+        assert_eq!(c.reset_pending, [Camera::Two, Camera::One]); // no repeats
+    }
+
+    #[test]
+    fn linked_resets_go_to_the_master_only() {
+        let mut c = Commands::default();
+        c.set_linked(true);
+        for target in [Some(Camera::Two), None, Some(Camera::One)] {
+            c.request_reset(target);
+        }
+        assert_eq!(c.reset_pending, [Camera::One]);
+    }
+
+    #[test]
     fn handle_parses_ui_messages() {
         let cmds: Shared = Arc::default();
         handle(
@@ -170,6 +236,9 @@ mod tests {
         assert!(!cmds.lock().unwrap().cam2.active);
         handle(r#"{"cmd":"link","on":true}"#, &cmds);
         assert!(cmds.lock().unwrap().linked);
+        handle(r#"{"cmd":"reset","camera":2}"#, &cmds);
+        handle(r#"{"cmd":"reset","camera":7}"#, &cmds); // ignored
+        assert_eq!(cmds.lock().unwrap().reset_pending, [Camera::One]); // linked
         handle(r#"{"cmd":"gimbal","camera":9,"active":true}"#, &cmds); // ignored
         handle("not json", &cmds); // logged, ignored
     }

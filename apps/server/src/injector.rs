@@ -6,7 +6,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use dji_common::logln;
-use dji_protocol::gimbal::{self, Camera, GimbalMove};
+use dji_protocol::gimbal::{self, Camera, GimbalMove, Recenter};
 use dji_transport::usb;
 
 use crate::INJECT_HZ;
@@ -34,9 +34,11 @@ fn write_ep2(ep2: BorrowedFd<'_>, frame: &[u8]) -> Sent {
 }
 
 /// Each tick: emit a pending camera-lock change once, a move frame per active
-/// camera, and a single release frame when a camera goes from active to
-/// released. A frame that fails transiently is retried next tick, so a lock
-/// change or a release is never silently lost.
+/// camera, a single release frame when a camera goes from active to released,
+/// then any queued yaw recenter once its camera's release is out. A frame that
+/// fails to *write* is retried next tick, so a lock change, release or reset is
+/// never silently lost; a written reset is never repeated (its ACK is not
+/// awaited, and a missing ACK does not mean the gimbal did not move).
 pub fn run(ep2: OwnedFd, cmds: Shared) {
     let period = Duration::from_millis(1000 / INJECT_HZ);
     let mut seq: u16 = 0;
@@ -90,6 +92,29 @@ pub fn run(ep2: OwnedFd, cmds: Shared) {
             };
             if delivered {
                 was_active[slot] = mv.active;
+            }
+        }
+
+        let resets = std::mem::take(&mut cmds.lock().unwrap().reset_pending);
+        let mut retry = Vec::new();
+        for cam in resets {
+            let slot = usize::from(cam == Camera::Two);
+            if was_active[slot] {
+                retry.push(cam); // its release has not gone out yet
+                continue;
+            }
+            match send(gimbal::recenter_frame(cam, Recenter::Yaw, seq), &mut seq) {
+                Sent::Ok => logln!("injector: yaw recenter sent to camera {}", slot + 1),
+                Sent::Retry => retry.push(cam),
+                Sent::Gone => return,
+            }
+        }
+        if !retry.is_empty() {
+            let mut c = cmds.lock().unwrap();
+            for cam in retry {
+                if !c.reset_pending.contains(&cam) {
+                    c.reset_pending.push(cam);
+                }
             }
         }
         sleep(period);

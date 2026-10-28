@@ -246,6 +246,11 @@ Hold and drag a camera's joystick to pan and tilt; drag distance scales the
 command up to the speed slider's limit, including diagonal movement. Releasing
 returns it to center and stops movement. Arrow keys provide keyboard control.
 Camera 2's joystick is disabled while linked; stop controls remain available.
+**Recenter** (per camera) and **Recenter all** return yaw to center and keep
+pitch, using the aircraft's native reset. Any movement on the camera is released
+first. While linked, every recenter goes to camera 1 only, and the aircraft
+brings camera 2 along. A reset is sent once and never retried automatically,
+because a missing acknowledgement does not mean the gimbal did not move.
 
 ### Portal design
 
@@ -282,7 +287,8 @@ DJI's encrypted/encoded stream, so the UI shows a placeholder for now.
 - [x] Flight telemetry from the direct USB link (`ttyACM0`): attitude, mode, satellites, gimbal (live-verified)
 - [ ] Verify USB-link position/height/velocity offsets (needs a GPS fix and motion)
 - [ ] OSDK UART commands: aircraft never acks them
-- [ ] Portal reset buttons per camera and reset-all (protocol builder ready)
+- [x] Portal yaw-recenter buttons per camera and recenter-all (built and unit-tested;
+      not yet pressed on the aircraft through the portal)
 - [ ] Live camera video in the UI (encrypted downlink — research spike)
 - [ ] Send/inject flight commands to the aircraft
 

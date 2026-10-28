@@ -54,8 +54,8 @@ pub enum Recenter {
 /// Build a native reset request without changing the gimbal's work mode.
 ///
 /// SDK-derived; yaw recenter is validated on this M210, including linked mode. See
-/// `docs/protocol.md` for provenance and remaining validation. This is
-/// deliberately not wired into the server injector yet.
+/// `docs/protocol.md` for provenance and remaining validation. The server
+/// sends only [`Recenter::Yaw`]; pitch-and-yaw stays unexposed until tested.
 pub fn recenter_frame(camera: Camera, action: Recenter, seq: u16) -> Vec<u8> {
     let header = Header {
         sender: duml::addr(Device::App, 0),

@@ -730,6 +730,27 @@ h3 {
   border-color: #573840;
   font-size: 10px;
 }
+.pad-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.recenter {
+  padding: 7px 14px;
+  min-height: 36px;
+  margin-top: 12px;
+  border-radius: 4px;
+  background: #13242e;
+  color: #b6d9e1;
+  font-size: 10px;
+}
+.camera-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 .control-settings {
   padding-left: 22px;
   min-width: 0;

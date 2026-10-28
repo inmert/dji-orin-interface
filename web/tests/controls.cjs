@@ -151,6 +151,14 @@ for (const disabled of [false, true]) {
   const stop = controls.find(b => b.props['aria-label'] === 'Stop camera 1');
   stop.props.onClick();
   assert.equal(sent.at(-1).active, false, 'stop releases while idle');
+  const recenter = controls.find(b => b.props['aria-label'] === 'Recenter camera 1 yaw');
+  assert.equal(recenter.props.disabled, disabled, 'recenter follows the movement gate');
+  if (!disabled) {
+    recenter.props.onClick();
+    assert.deepEqual(sent.slice(-2).map(c => c.cmd), ['gimbal', 'reset'], 'recenter releases, then resets');
+    assert.equal(sent.at(-2).active, false);
+    assert.equal(sent.at(-1).camera, 1);
+  }
   const press = () => up.props.onKeyDown({ key: 'ArrowUp', repeat: false, preventDefault() {} });
   press();
   assert.equal(sent.at(-1).active, !disabled);

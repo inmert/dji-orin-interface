@@ -143,8 +143,8 @@ Decoded from captured DJI Pilot traffic and implemented in the `gimbal` module
   names `0x10` "User Params Get", `0x13` "User Params Reset Default", and
   `0x4c` "Reset And Set Mode". Do not substitute a settings reset for recenter.
   The SDK decode and live tests below establish the encoding and behavior.
-  The protocol builder is implemented; server and portal reset controls remain
-  to be added.
+  The server and portal expose it as per-camera **Recenter** and **Recenter
+  all** buttons (yaw only, `FE 01`), following the semantics verified below.
 
 ### Recenter capture checklist (if an app reset control is available)
 

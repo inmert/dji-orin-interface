@@ -14,7 +14,9 @@ pub mod attitude;
 pub mod command;
 
 pub use attitude::Attitude;
-pub use command::{GimbalMove, lock_frame, lock_release_aux_frame, move_frame};
+pub use command::{
+    GimbalMove, Recenter, lock_frame, lock_release_aux_frame, move_frame, recenter_frame,
+};
 
 /// Gimbal command set.
 pub const CMD_SET: u8 = 0x04;

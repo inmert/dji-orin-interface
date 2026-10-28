@@ -100,6 +100,8 @@ export interface Telemetry {
 export type Command =
   | { cmd: "gimbal"; camera: number; pitch: number; yaw: number; active: boolean }
   | { cmd: "link"; on: boolean }
+  /** Yaw recenter; omit `camera` for both. While linked the server resets the master. */
+  | { cmd: "reset"; camera?: number }
   | { cmd: "stop" };
 
 export type Status = "connecting" | "open" | "closed";
