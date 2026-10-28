@@ -6,9 +6,13 @@
   device/OTG-capable (`tegra-xudc`, role switch `usb2-0-role-switch`); the
   full-size USB-A ports are hosts.
 - **DJI Cendence** remote controller.
-- **DJI Matrice 210 V1** aircraft.
+- **DJI Matrice 210 V1** aircraft, with a **Zenmuse XT2** on gimbal 0 (visual
+  camera + FLIR thermal core), a **Zenmuse Z30** on gimbal 2, and its fixed
+  centre-front **FPV camera**.
 - **DJI CrystalSky** monitor (`ZS600B`) running DJI Pilot — used to learn the
   command set.
+- A **CP2102 USB-TTL adapter** (3.3 V logic) for the aircraft's SDK UART; see
+  below for why the Orin's own UART is not used.
 
 ## USB roles (important)
 
@@ -54,10 +58,15 @@ rule applies to everything beyond read-only queries.
 With the aircraft's USB mode switch in the **left (PC)** position and the
 aircraft's USB port cabled to an Orin USB-A port, the aircraft enumerates as
 `2ca3:001f` with RNDIS (the Orin gets `192.168.42.3`), mass storage, a vendor
-bulk interface (no driver), and a CDC-ACM serial port, **`/dev/ttyACM0`**. (If
-the CrystalSky is also plugged in, it takes the next ACM number.)
+bulk interface (no driver), and a CDC-ACM serial port, normally
+**`/dev/ttyACM0`**. The number is not stable: after an aircraft restart the port
+can come back as `ttyACM1`, and when the CrystalSky is also plugged in it takes
+whichever number is free, so the server picks the first `ttyACM` that is not the
+CrystalSky (by `/dev/serial/by-id`) and picks again on every reopen. The RNDIS
+network is also where the FPV camera's video comes from, over UDT (see
+[protocol.md](protocol.md#fpv-camera-third-camera)).
 
-`ttyACM0` carries **DUML** (same framing and checksums as the RC link) in both
+The ACM port carries **DUML** (same framing and checksums as the RC link) in both
 directions, with no OSDK activation or credentials. At idle the aircraft pushes
 about four frames per second to `PC[0]`: gimbal attitude `0x04/0x05`
 (2 Hz), flight controller `0x03/0x43` (1 Hz), `0x11/0x01`, and `Gimbal[7]`
@@ -107,6 +116,18 @@ Do **not** use a 5 V adapter such as the FTDI `TTL-232R-5V`; its TXD would drive
 Diagnostic captures and the version-query script are in ignored
 `captures/osdk/uart-diagnostics/`. Private activation configuration lives
 outside the repo and must not be committed.
+
+## Video decoding on the Orin
+
+The cameras' H.264 (the gimbal cameras from the RC's USB mux, the FPV camera
+over UDT) is decoded on the Orin's hardware decoder through GStreamer:
+`nvv4l2decoder is-gdr-stream=true ! nvvidconv ! nvjpegenc`, from NVIDIA's L4T
+plugins. `is-gdr-stream=true` is required: the cameras use intra refresh with
+few or no IDR frames, and without it the decoder drops every frame. NVIDIA's
+elements print to stdout even with `-q`, so the server carries the JPEG frames
+on fd 3 instead. Ubuntu's FFmpeg 8 on the Orin has only the NVIDIA H.264
+decoders (`h264_cuvid`, `h264_nvv4l2dec`; `cuvid` fails here), so for software
+decoding use GStreamer's `avdec_h264` or `openh264dec`.
 
 ## Other interfaces on the Orin
 

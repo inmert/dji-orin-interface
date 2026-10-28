@@ -104,6 +104,11 @@ A frame captured from DJI Pilot:
 
 Higher types seen in captures (e.g. `0x0e`, `0x1f`) are not all identified.
 
+The index (high 3 bits) tells the payloads apart on this aircraft: `Camera[0]`
+is the Zenmuse XT2's visual camera and `Camera[1]` its thermal core (both on
+`Gimbal[0]`), `Camera[2]` is the Zenmuse Z30 on `Gimbal[2]`, and `Gimbal[4]` is
+the fixed FPV camera's mount. `Gimbal[7]` is the dual-gimbal sync address.
+
 ## Command injection: gimbal control
 
 Decoded from captured DJI Pilot traffic and implemented in the `gimbal` module

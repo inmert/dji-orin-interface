@@ -96,7 +96,8 @@ apps/
     src/main.rs                 gadget event loop, worker lifecycle
     src/state.rs                desired gimbal state + UI command messages
     src/injector.rs             streams gimbal commands to the RC (ep2)
-    src/reader.rs               decodes RC telemetry (ep1)
+    src/reader.rs               decodes RC telemetry (ep1), hands video channels to video.rs
+    src/ports.rs                default serial ports for the direct readers (re-picked on reopen)
     src/flight.rs               direct aircraft readers: OSDK UART + USB API port (rx only)
     src/video.rs                camera video: RC mux / UDT H.264 → NVDEC → MJPEG, on demand
     src/thermal_auto.rs         thermal auto range (fits the isotherm band to the scene)
@@ -108,10 +109,11 @@ docs/                         protocol and hardware notes
 .github/workflows/ci.yml      fmt, clippy, tests, docs, web build
 ```
 
-Each aircraft feature gets its own module in `dji-protocol` (`gimbal` today)
-with the same split: a `command` submodule for frames we inject and a report
-submodule for what the aircraft pushes up. A future feature (e.g. props/motors)
-slots in as a sibling `src/<feature>.rs` + `src/<feature>/`.
+Each aircraft feature gets its own module in `dji-protocol` (`gimbal`, `flyc`,
+`thermal`, plus the `osdk` and `rcmux` wire formats) with the same split: frames
+we inject on one side, reports the aircraft pushes up on the other. A future
+feature (e.g. props/motors) slots in as a sibling `src/<feature>.rs` +
+`src/<feature>/`.
 
 The project is **Rust** (edition 2024). `common`, `protocol` and `transport` are
 **dependency-free**, so the capture tools (`cargo build -p dji-tools`) never
@@ -131,7 +133,13 @@ developed with 1.99 on aarch64). No build-time kernel headers — the usbfs/gadg
 ABI is declared in `sys`. If `cargo` isn't on your PATH:
 `export PATH="$HOME/.cargo/bin:$PATH"`. The web UI additionally needs Node 18+
 to build (CI uses 22; developed with Node 24 / npm 11), and a few small crates
-are fetched for the `server` binary.
+are fetched for the `server` binary. `dji-udt` needs a C++ compiler (`c++`,
+`ar`) for its vendored UDT library.
+
+**Runtime, for camera video only:** GStreamer (`gst-launch-1.0`) with NVIDIA's
+L4T plugins (`nvv4l2decoder`, `nvvidconv`, `nvjpegenc`), which JetPack
+installs. Without them the server runs, but the video feeds fail to start (see
+[docs/hardware.md](docs/hardware.md#video-decoding-on-the-orin)).
 
 ```bash
 cargo build --release   # binaries in target/release/{ffs_capture,aoa_capture,bridge,server}
@@ -296,8 +304,9 @@ To check a raw capture offline:
 
 For an **offline UI preview**, run `cd web && npm run dev` and open the printed
 local URL with `?preview=1` appended. Preview mode never opens the control
-WebSocket. `npm test` runs the frontend's offline control-handler and connection
-regression checks. The UI disables movement until the received frame counter
+WebSocket. `npm test` runs the frontend's offline checks: control handlers and
+connection lifecycle, MJPEG playback (chunking, newest-frame display, cleanup)
+and the thermal click mapping. The UI disables movement until the received frame counter
 advances, and marks telemetry stale after two seconds without new frames.
 Hold and drag a camera's joystick to pan and tilt; drag distance scales the
 command up to the speed slider's limit, including diagonal movement. Releasing
