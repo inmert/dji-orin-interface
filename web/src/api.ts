@@ -82,6 +82,16 @@ export interface UsbLink {
   gimbals: Record<string, GimbalAttitude>;
 }
 
+/** FPV camera video over the aircraft's USB network (Fpv in apps/server/src/fpv.rs). */
+export interface FpvStatus {
+  addr: string;
+  state: "idle" | "connecting" | "streaming" | "error";
+  viewers: number;
+  frames: number;
+  bytes: number;
+  error: string | null;
+}
+
 export interface Telemetry {
   link_up: boolean;
   frames: number;
@@ -93,6 +103,8 @@ export interface Telemetry {
   usb?: UsbLink;
   /** Server-authoritative camera-link state, so a refreshed page reflects it. */
   linked: boolean;
+  /** FPV video stream; absent when disabled or from older servers. */
+  fpv?: FpvStatus | null;
 }
 
 // --- Commands (mirror WsCommand in apps/server/src/state.rs) ---
@@ -163,13 +175,26 @@ export function isUsbLink(value: unknown): value is UsbLink {
       && vec3(((o as Record<string, unknown>).unverified as Record<string, unknown>).velocity));
 }
 
+const FPV_STATES = ["idle", "connecting", "streaming", "error"];
+
+export function isFpvStatus(value: unknown): value is FpvStatus {
+  return record(value) && typeof value.addr === "string"
+    && typeof value.state === "string" && FPV_STATES.includes(value.state)
+    && counter(value.viewers) && counter(value.frames) && counter(value.bytes)
+    && optional(value.error, e => typeof e === "string");
+}
+
+/** URL of the server's MJPEG stream; opening it starts the aircraft stream. */
+export const fpvStreamUrl = () => `${location.protocol}//${location.hostname}:8080/fpv.mjpg`;
+
 // JSON parsing alone does not validate a snapshot. Reject the whole message
 // before it changes freshness or reaches components that dereference its rows.
 export function isTelemetry(value: unknown): value is Telemetry {
   if (!record(value) || !counter(value.frames) || typeof value.link_up !== "boolean"
     || typeof value.linked !== "boolean" || !record(value.gimbals) || !record(value.streams)
     || (value.flight !== undefined && !isFlightLink(value.flight))
-    || (value.usb !== undefined && !isUsbLink(value.usb))) return false;
+    || (value.usb !== undefined && !isUsbLink(value.usb))
+    || !optional(value.fpv, isFpvStatus)) return false;
   return Object.values(value.gimbals).every(isGimbal)
     && Object.values(value.streams).every(s => record(s)
       && typeof s.from === "string" && typeof s.to === "string"

@@ -11,6 +11,7 @@ use tungstenite::Message;
 use dji_common::logln;
 use dji_protocol::Telemetry;
 
+use crate::fpv::{Fpv, FpvStatus};
 use crate::reader::Tele;
 use crate::state::{self, Shared};
 use crate::{INJECT_HZ, WS_ADDR, die};
@@ -22,23 +23,26 @@ struct Snapshot<'a> {
     #[serde(flatten)]
     tele: &'a Telemetry,
     linked: bool,
+    /// FPV video stream state; absent when the stream is disabled.
+    fpv: Option<FpvStatus>,
 }
 
 /// Accept WebSocket clients forever, one thread each.
-pub fn serve(cmds: Shared, tele: Tele) {
+pub fn serve(cmds: Shared, tele: Tele, fpv: Option<Arc<Fpv>>) {
     let listener =
         TcpListener::bind(WS_ADDR).unwrap_or_else(|e| die(&format!("ws: bind {WS_ADDR}: {e}")));
     logln!("ws: listening on {WS_ADDR}");
     for stream in listener.incoming().flatten() {
         let cmds = Arc::clone(&cmds);
         let tele = Arc::clone(&tele);
-        std::thread::spawn(move || client(stream, cmds, tele));
+        let fpv = fpv.clone();
+        std::thread::spawn(move || client(stream, cmds, tele, fpv));
     }
 }
 
 /// One WebSocket client: stream telemetry down, apply commands up. On any exit
 /// (disconnect, error) release every gimbal — a dead-man stop.
-fn client(stream: TcpStream, cmds: Shared, tele: Tele) {
+fn client(stream: TcpStream, cmds: Shared, tele: Tele, fpv: Option<Arc<Fpv>>) {
     let peer = stream
         .peer_addr()
         .map(|a| a.to_string())
@@ -69,10 +73,15 @@ fn client(stream: TcpStream, cmds: Shared, tele: Tele) {
     loop {
         if last_send.elapsed() >= interval {
             let linked = cmds.lock().unwrap().linked;
+            let fpv = fpv.as_ref().map(|f| f.status());
             let json = {
                 let t = tele.lock().unwrap();
-                serde_json::to_string(&Snapshot { tele: &t, linked })
-                    .unwrap_or_else(|_| "{}".into())
+                serde_json::to_string(&Snapshot {
+                    tele: &t,
+                    linked,
+                    fpv,
+                })
+                .unwrap_or_else(|_| "{}".into())
             };
             if ws.send(Message::text(json)).is_err() {
                 break;

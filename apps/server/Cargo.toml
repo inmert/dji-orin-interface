@@ -14,6 +14,7 @@ path = "src/main.rs"
 dji-common.workspace = true
 dji-protocol = { workspace = true, features = ["serde"] }
 dji-transport.workspace = true
+dji-udt.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tiny_http.workspace = true

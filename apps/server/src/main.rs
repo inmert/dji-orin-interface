@@ -8,11 +8,14 @@
 //! Independently, [`flight`] reads what the aircraft pushes on its own ports,
 //! receive-only: the OSDK UART broadcast (attitude, velocity, GPS, battery,
 //! status) and the DUML reports on its USB API port (attitude, flight mode).
+//! [`fpv`] streams the FPV camera's H.264 (UDT over the aircraft's USB network)
+//! to the browser as MJPEG, connecting only while someone watches.
 //!
 //! ```text
 //!   browser  ──HTTP :8080 / WS :8081──  server (Orin, gadget)  ──USB──  RC ── aircraft
 //!                                              ├──── OSDK UART (rx only) ────────┤
-//!                                              └──── USB API port (rx only) ─────┘
+//!                                              ├──── USB API port (rx only) ─────┤
+//!                                              └──── USB network, UDT video ─────┘
 //! ```
 //!
 //! SAFETY: the gimbal commands move the real camera mount via the powered
@@ -24,14 +27,18 @@
 //! `OSDK_UART` picks the flight-data port (default `/dev/ttyTHS1`; `off`
 //! disables it) and `OSDK_BAUD` its rate (default 230400). `USB_ACM` picks the
 //! aircraft's USB API serial port (default `/dev/ttyACM0`; `off` disables it).
+//! `FPV_UDT` is the FPV camera's UDT address (default `192.168.42.2:40003`;
+//! `off` disables the video).
 
 mod flight;
+mod fpv;
 mod http;
 mod injector;
 mod reader;
 mod state;
 mod ws;
 
+use std::net::SocketAddrV4;
 use std::os::fd::AsFd;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -80,11 +87,25 @@ fn main() {
     let cmds: Shared = Arc::new(Mutex::new(Commands::default()));
     let tele: Tele = Arc::new(Mutex::new(Telemetry::default()));
 
+    // FPV video: nothing connects until a viewer opens the stream.
+    let fpv = match std::env::var("FPV_UDT").as_deref() {
+        Ok("off") => None,
+        Ok(addr) => Some(
+            addr.parse::<SocketAddrV4>()
+                .unwrap_or_else(|e| die(&format!("FPV_UDT={addr}: {e}"))),
+        ),
+        Err(_) => Some(SocketAddrV4::new([192, 168, 42, 2].into(), 40003)),
+    }
+    .map(fpv::Fpv::new);
+
     // Web front end + WebSocket come up immediately (independent of the USB link).
-    std::thread::spawn(move || http::serve(web_root));
+    {
+        let fpv = fpv.clone();
+        std::thread::spawn(move || http::serve(web_root, fpv));
+    }
     {
         let (cmds, tele) = (Arc::clone(&cmds), Arc::clone(&tele));
-        std::thread::spawn(move || ws::serve(cmds, tele));
+        std::thread::spawn(move || ws::serve(cmds, tele, fpv));
     }
 
     // Direct aircraft ports: receive-only, independent of the RC link.

@@ -1,10 +1,17 @@
-//! Static HTTP server for the built web front end.
+//! HTTP server: the built web front end, plus the FPV camera as MJPEG.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
 use dji_common::logln;
 
+use crate::fpv::Fpv;
 use crate::{HTTP_ADDR, die};
+
+/// Path of the FPV camera's MJPEG stream.
+const FPV_PATH: &str = "/fpv.mjpg";
 
 fn content_type(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
@@ -28,12 +35,54 @@ fn resolve(url: &str) -> Option<&str> {
     safe.then_some(rel)
 }
 
-/// Serve the built front end from `web_root` forever.
-pub fn serve(web_root: PathBuf) {
+/// Stream FPV frames to one client as `multipart/x-mixed-replace` until it
+/// disconnects. Runs on its own thread; the subscription keeps the aircraft
+/// stream up while it lasts.
+fn stream_fpv(request: tiny_http::Request, fpv: &Arc<Fpv>) {
+    let peer = request
+        .remote_addr()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    let mut viewer = fpv.subscribe();
+    let mut out = request.into_writer();
+    logln!("http: fpv viewer {peer} connected");
+    let header = "HTTP/1.1 200 OK\r\n\
+        Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\
+        Cache-Control: no-cache, no-store\r\n\
+        Connection: close\r\n\r\n";
+    let mut ok = out.write_all(header.as_bytes()).is_ok();
+    while ok {
+        let Some(jpeg) = viewer.next_frame(Duration::from_secs(1)) else {
+            continue;
+        };
+        let part = format!(
+            "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+            jpeg.len()
+        );
+        ok = out
+            .write_all(part.as_bytes())
+            .and_then(|()| out.write_all(&jpeg))
+            .and_then(|()| out.write_all(b"\r\n"))
+            .and_then(|()| out.flush())
+            .is_ok();
+    }
+    logln!("http: fpv viewer {peer} gone");
+}
+
+/// Serve the built front end from `web_root` forever, and the FPV stream at
+/// [`FPV_PATH`] when `fpv` is enabled.
+pub fn serve(web_root: PathBuf, fpv: Option<Arc<Fpv>>) {
     let server = tiny_http::Server::http(HTTP_ADDR)
         .unwrap_or_else(|e| die(&format!("http: bind {HTTP_ADDR}: {e}")));
     logln!("http: serving {} on {HTTP_ADDR}", web_root.display());
     for request in server.incoming_requests() {
+        if request.url().split('?').next() == Some(FPV_PATH)
+            && let Some(fpv) = &fpv
+        {
+            let fpv = Arc::clone(fpv);
+            std::thread::spawn(move || stream_fpv(request, &fpv));
+            continue;
+        }
         let file = resolve(request.url()).and_then(|rel| {
             let path = web_root.join(rel);
             std::fs::read(&path).ok().map(|bytes| (path, bytes))

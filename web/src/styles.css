@@ -1443,3 +1443,52 @@ footer > span:first-child {
     display: none !important;
   }
 }
+
+/* FPV live video: the MJPEG <img> fills the viewport behind the overlays. */
+.fpv-video {
+  height: auto;
+  aspect-ratio: 608 / 448;
+  max-height: 448px;
+  margin-bottom: 16px;
+  border: 1px solid #243844;
+  border-radius: 8px;
+}
+.fpv-video img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #05090c;
+}
+.fpv-video:not(.live) img {
+  visibility: hidden;
+}
+.fpv-video .viewport-label,
+.fpv-video .viewport-corner,
+.fpv-video .fpv-toggle {
+  z-index: 2;
+}
+.fpv-video.live .viewport-label .dot {
+  background: #4ee0a8;
+}
+.fpv-toggle {
+  position: absolute;
+  left: 14px;
+  bottom: 12px;
+  padding: 6px 12px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: #d5e6ee;
+  background: #0c1a23d9;
+  border: 1px solid #3a5868;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.fpv-toggle:hover:not(:disabled) {
+  border-color: #6fa9bf;
+}
+.fpv-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

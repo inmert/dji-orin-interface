@@ -81,6 +81,10 @@ crates/
     src/aoa/host.rs             Orin as AOA host (toward a tablet)
     src/aoa/device.rs           Orin as AOA device (toward the RC)
     src/serial.rs               receive-only serial port (OSDK UART)
+  udt/                        INFRASTRUCTURE — UDT4 client for camera video
+    vendor/udt4/                UDT 4.11 from DJI's Onboard SDK (BSD licence)
+    shim.cpp, build.rs          C API over it, built with the system C++ compiler
+    src/lib.rs                  safe receive-only Stream (connect/recv/close)
 apps/
   tools/                      PRESENTATION — capture/bridge CLIs
     src/bin/ffs_capture.rs      Orin as the app toward the controller
@@ -92,6 +96,7 @@ apps/
     src/injector.rs             streams gimbal commands to the RC (ep2)
     src/reader.rs               decodes RC telemetry (ep1)
     src/flight.rs               direct aircraft readers: OSDK UART + USB API port (rx only)
+    src/fpv.rs                  FPV video: UDT H.264 → GStreamer → MJPEG, on demand
     src/ws.rs / http.rs         WebSocket + static file server
 web/                          Vite + React + TypeScript front end (built to web/dist)
 scripts/                      gadget bring-up/teardown + run_{capture,bridge,server}.sh
@@ -108,7 +113,8 @@ The project is **Rust** (edition 2024). `common`, `protocol` and `transport` are
 **dependency-free**, so the capture tools (`cargo build -p dji-tools`) never
 compile the web stack. Only `dji-server` pulls crates (`tiny_http`,
 `tungstenite`, `serde`/`serde_json`), and it turns on `dji-protocol`'s `serde`
-feature to serialize telemetry. Framing and checksums live once in
+feature to serialize telemetry. `dji-udt` has no crate dependencies either; its
+build script compiles the vendored C++ with the system `c++` and `ar`. Framing and checksums live once in
 `dji_protocol::duml` (`parse`/`scan`/`build`, the streaming `Decoder`), shared
 by the gadget side, the host side, and the command builders. Safe USB wrappers
 (`usb::usbfs`, `usb::ffs`) keep raw pointers inside `dji-transport`; file
@@ -235,6 +241,19 @@ flight mode, satellite count and the camera 1 gimbal angles. Position, height
 and velocity are shown as unverified until checked with a GPS fix and in
 motion. `USB_ACM` picks another port, or `off` disables it.
 
+**FPV video.** The FPV camera card has a **Start video** button. While at
+least one browser watches, the server holds a UDT connection to the aircraft's
+FPV stream (`192.168.42.2:40003` on the USB network link; raw H.264, 608×448,
+~29 fps), decodes it with a `gst-launch-1.0` child (`avdec_h264` → `jpegenc`)
+and serves it as MJPEG at `http://<orin>:8080/fpv.mjpg`. The connection is
+dropped 3 s after the last viewer leaves, so nothing is sent to the aircraft
+when nobody watches; the client only exchanges UDT's own handshake and ACKs.
+Each viewer receives about 10 Mbit/s. Needs GStreamer with `gst-libav`
+(`apt install gstreamer1.0-tools gstreamer1.0-libav gstreamer1.0-plugins-good
+gstreamer1.0-plugins-bad`). `FPV_UDT` sets another address, or `off`
+disables it. MJPEG keeps it working from any browser over plain HTTP, where
+in-browser H.264 decoding (WebCodecs) would need HTTPS.
+
 To check a raw capture offline:
 `cargo run -p dji-protocol --example osdk_broadcast -- <capture.bin>`.
 
@@ -267,13 +286,12 @@ These effects do not process camera video. No new runtime packages are required.
 Preview the design with `cd web && npm run dev` and append `?preview=1` to the
 URL; this never opens the aircraft control WebSocket.
 
-Live video (the camera feeds) is a separate research spike: the RC downlink is
-DJI's encrypted/encoded stream, so the UI shows a placeholder for now. The
-aircraft also has a third, fixed **FPV camera** at the centre front. The UI
-shows it as camera 03 with its mount's heading and how many status reports it
-sends, but it has no controls. DJI's SDK reads that camera's video as plain
-H.264 over the aircraft's USB network link; that stream is verified on the
-M210 V1 (608×448, ~29 fps) and is the route to live video in the UI (see [docs/protocol.md](docs/protocol.md#fpv-camera-third-camera)).
+Gimbal camera video is still a research spike: the RC downlink is DJI's
+encrypted/encoded stream, so cameras 01 and 02 show a placeholder. The
+aircraft's third, fixed **FPV camera** at the centre front has live video:
+the UI shows it as camera 03 with its mount's heading, its status-report count
+and the video stream described above (see
+[docs/protocol.md](docs/protocol.md#fpv-camera-third-camera)). It has no controls.
 
 ## Status
 
@@ -299,7 +317,8 @@ M210 V1 (608×448, ~29 fps) and is the route to live video in the UI (see [docs/
       (2026-10-28; see docs/protocol.md)
 - [x] Third (FPV) camera identified: `Camera[1]`, fixed mount `Gimbal[4]`; shown in the UI
 - [x] FPV camera video received as H.264 over USB/UDT (192.168.42.2:40003), decoded offline
-- [ ] Live camera video in the UI (RC downlink encrypted; FPV UDT stream is the route)
+- [x] Live FPV camera video in the UI (MJPEG from the UDT stream, on demand)
+- [ ] Gimbal camera video (RC downlink encrypted; try the USB/UDT main-camera port 40001)
 - [ ] Send/inject flight commands to the aircraft
 
 ## Acknowledgements

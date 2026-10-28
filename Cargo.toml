@@ -3,6 +3,7 @@
 #   crates/common     shared: timestamped logging, hex helpers      (no deps)
 #   crates/protocol   domain: DUML framing, gimbal, telemetry       (no I/O; serde optional)
 #   crates/transport  infrastructure: USB (usbfs, FunctionFS), AOA  (libc via externs)
+#   crates/udt        infrastructure: UDT4 client for camera video  (vendored C++, built by build.rs)
 #   apps/tools        presentation: ffs_capture, aoa_capture, bridge
 #   apps/server       presentation: web UI server (the only crate with web deps)
 #
@@ -23,6 +24,7 @@ publish = false
 dji-common = { path = "crates/common" }
 dji-protocol = { path = "crates/protocol" }
 dji-transport = { path = "crates/transport" }
+dji-udt = { path = "crates/udt" }
 
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

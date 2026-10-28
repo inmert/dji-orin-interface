@@ -1,0 +1,12 @@
+[package]
+name = "dji-udt"
+description = "Minimal UDT4 client (vendored C++ library) for the aircraft's camera streams over USB"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+build = "build.rs"
+links = "udt"
+
+[lints]
+workspace = true
