@@ -7,5 +7,5 @@ export default defineConfig({
   base: "./",
   plugins: [react()],
   build: { outDir: "dist", emptyOutDir: true },
-  server: { host: true, port: 5173 },
+  server: { host: true, port: 5173, proxy: { "/video": "http://127.0.0.1:8080" } },
 });

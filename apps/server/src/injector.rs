@@ -7,10 +7,11 @@ use std::time::Duration;
 
 use dji_common::logln;
 use dji_protocol::gimbal::{self, Camera, GimbalMove, Recenter};
+use dji_protocol::thermal;
 use dji_transport::usb;
 
 use crate::INJECT_HZ;
-use crate::state::Shared;
+use crate::state::{Shared, ThermalCmd};
 
 /// Outcome of one ep2 write.
 enum Sent {
@@ -114,6 +115,33 @@ pub fn run(ep2: OwnedFd, cmds: Shared) {
             for cam in retry {
                 if !c.reset_pending.contains(&cam) {
                     c.reset_pending.push(cam);
+                }
+            }
+        }
+
+        // Thermal camera settings: each sent once, in order; a failed write
+        // is retried next tick ahead of anything queued since.
+        let pending = cmds.lock().unwrap().take_thermal();
+        for (i, cmd) in pending.iter().enumerate() {
+            let frame = match *cmd {
+                ThermalCmd::Spot(x, y) => thermal::spot_frame(x, y, seq),
+                ThermalCmd::Mode(m) => thermal::display_mode_frame(m, seq),
+                ThermalCmd::Isotherm(bound, v) => thermal::isotherm_frame(bound, v, seq),
+                ThermalCmd::Measure(m) => thermal::measure_frame(m, seq),
+                ThermalCmd::Area([l, t, r, b]) => thermal::area_frame(l, t, r, b, seq),
+            };
+            match send(frame, &mut seq) {
+                Sent::Ok => {
+                    cmds.lock().unwrap().thermal_sent();
+                    logln!("injector: thermal {cmd:?} sent");
+                }
+                Sent::Retry => {
+                    cmds.lock().unwrap().retry_thermal(&pending[i..]);
+                    break;
+                }
+                Sent::Gone => {
+                    cmds.lock().unwrap().retry_thermal(&pending[i..]);
+                    return;
                 }
             }
         }

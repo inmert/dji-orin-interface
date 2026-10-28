@@ -124,7 +124,7 @@ const SpotlightCard = ({
 
   useEffect(() => {
     wakeRef.current?.();
-  });
+  }, [color, softness, form, spotlightSize, intensity, borderGlow, proximity, smoothing, ambient, flare, grain, theme]);
 
   useEffect(() => {
     const root = rootRef.current;

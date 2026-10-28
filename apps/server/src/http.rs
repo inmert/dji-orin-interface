@@ -1,4 +1,4 @@
-//! HTTP server: the built web front end, plus the FPV camera as MJPEG.
+//! HTTP server: the built web front end, plus the camera feeds as MJPEG.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -7,11 +7,16 @@ use std::time::Duration;
 
 use dji_common::logln;
 
-use crate::fpv::Fpv;
+use crate::video::{Feed, Feeds};
 use crate::{HTTP_ADDR, die};
 
-/// Path of the FPV camera's MJPEG stream.
-const FPV_PATH: &str = "/fpv.mjpg";
+/// The feed named by a `/video/<name>.mjpg` URL (query ignored).
+fn feed_name(url: &str) -> Option<&str> {
+    url.split('?')
+        .next()?
+        .strip_prefix("/video/")?
+        .strip_suffix(".mjpg")
+}
 
 fn content_type(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
@@ -35,52 +40,60 @@ fn resolve(url: &str) -> Option<&str> {
     safe.then_some(rel)
 }
 
-/// Stream FPV frames to one client as `multipart/x-mixed-replace` until it
-/// disconnects. Runs on its own thread; the subscription keeps the aircraft
-/// stream up while it lasts.
-fn stream_fpv(request: tiny_http::Request, fpv: &Arc<Fpv>) {
+/// Stream a feed's frames to one client as `multipart/x-mixed-replace` until
+/// it disconnects. Runs on its own thread; the subscription keeps the feed
+/// decoding while it lasts.
+fn stream_video(request: tiny_http::Request, feed: &Arc<Feed>) {
     let peer = request
         .remote_addr()
         .map(ToString::to_string)
         .unwrap_or_default();
-    let mut viewer = fpv.subscribe();
+    let name = feed.name();
+    let mut viewer = feed.subscribe();
     let mut out = request.into_writer();
-    logln!("http: fpv viewer {peer} connected");
+    logln!("http: {name} viewer {peer} connected");
     let header = "HTTP/1.1 200 OK\r\n\
         Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\
         Cache-Control: no-cache, no-store\r\n\
         Connection: close\r\n\r\n";
-    let mut ok = out.write_all(header.as_bytes()).is_ok();
+    // Flush now: a feed with no video yet must still answer the request.
+    let mut ok = out
+        .write_all(header.as_bytes())
+        .and_then(|()| out.flush())
+        .is_ok();
     while ok {
-        let Some(jpeg) = viewer.next_frame(Duration::from_secs(1)) else {
+        let Some(frame) = viewer.next_frame(Duration::from_secs(1)) else {
+            // No video: write a blank line (ignored between parts) so a
+            // client that left is noticed and its subscription released.
+            ok = out.write_all(b"\r\n").and_then(|()| out.flush()).is_ok();
             continue;
         };
         let part = format!(
-            "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
-            jpeg.len()
+            "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nX-Sequence: {}\r\nX-Timestamp-Ms: {}\r\n\r\n",
+            frame.jpeg.len(),
+            frame.sequence,
+            frame.timestamp_ms
         );
         ok = out
             .write_all(part.as_bytes())
-            .and_then(|()| out.write_all(&jpeg))
+            .and_then(|()| out.write_all(&frame.jpeg))
             .and_then(|()| out.write_all(b"\r\n"))
             .and_then(|()| out.flush())
             .is_ok();
     }
-    logln!("http: fpv viewer {peer} gone");
+    logln!("http: {name} viewer {peer} gone");
 }
 
-/// Serve the built front end from `web_root` forever, and the FPV stream at
-/// [`FPV_PATH`] when `fpv` is enabled.
-pub fn serve(web_root: PathBuf, fpv: Option<Arc<Fpv>>) {
+/// Serve the built front end from `web_root` forever, and each feed at
+/// `/video/<name>.mjpg`.
+pub fn serve(web_root: PathBuf, feeds: Arc<Feeds>) {
     let server = tiny_http::Server::http(HTTP_ADDR)
         .unwrap_or_else(|e| die(&format!("http: bind {HTTP_ADDR}: {e}")));
     logln!("http: serving {} on {HTTP_ADDR}", web_root.display());
     for request in server.incoming_requests() {
-        if request.url().split('?').next() == Some(FPV_PATH)
-            && let Some(fpv) = &fpv
-        {
-            let fpv = Arc::clone(fpv);
-            std::thread::spawn(move || stream_fpv(request, &fpv));
+        if let Some(feed) = feed_name(request.url()).and_then(|n| feeds.get(n)) {
+            let feed = Arc::clone(feed);
+            std::thread::spawn(move || stream_video(request, &feed));
             continue;
         }
         let file = resolve(request.url()).and_then(|rel| {
@@ -103,7 +116,15 @@ pub fn serve(web_root: PathBuf, fpv: Option<Arc<Fpv>>) {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve;
+    use super::{feed_name, resolve};
+
+    #[test]
+    fn parses_feed_urls() {
+        assert_eq!(feed_name("/video/cam1.mjpg"), Some("cam1"));
+        assert_eq!(feed_name("/video/fpv.mjpg?s=3"), Some("fpv"));
+        assert_eq!(feed_name("/video/cam1.h264"), None);
+        assert_eq!(feed_name("/fpv.mjpg"), None);
+    }
 
     #[test]
     fn resolves_and_rejects_traversal() {

@@ -7,6 +7,8 @@
 //! * [`flyc`] — flight controller reports (attitude, flight mode).
 //! * [`osdk`] — the Onboard SDK OpenProtocol (0xAA) the aircraft's OSDK UART
 //!   speaks; decode-only, for its flight-data broadcast.
+//! * [`rcmux`] — the RC's USB packet mux (DUML + plain H.264 camera video).
+//! * [`thermal`] — the thermal camera's spot meter, display mode and report.
 //! * [`telemetry`] — the link snapshot, folding in each feature's reports.
 //!
 //! New aircraft features (e.g. props/motors, camera settings) get a sibling
@@ -16,7 +18,9 @@ pub mod duml;
 pub mod flyc;
 pub mod gimbal;
 pub mod osdk;
+pub mod rcmux;
 pub mod telemetry;
+pub mod thermal;
 
 pub use duml::{Decoder, Device, Frame, Header};
 pub use telemetry::{FlightLink, Telemetry, UsbLink};

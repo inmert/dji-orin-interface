@@ -82,14 +82,47 @@ export interface UsbLink {
   gimbals: Record<string, GimbalAttitude>;
 }
 
-/** FPV camera video over the aircraft's USB network (Fpv in apps/server/src/fpv.rs). */
-export interface FpvStatus {
-  addr: string;
+/** One camera video feed (VideoStatus in apps/server/src/video.rs). */
+export interface VideoStatus {
+  source: string;
   state: "idle" | "connecting" | "streaming" | "error";
   viewers: number;
   frames: number;
   bytes: number;
+  dropped: number;
   error: string | null;
+}
+
+/** Thermal camera report (Report in crates/protocol/src/thermal.rs). */
+export interface ThermalReport {
+  /** Spot-meter position, normalised 0..1 over the thermal image. */
+  spot_x: number;
+  spot_y: number;
+  /** °C at the spot. */
+  spot_temp: number;
+  spot_valid: boolean;
+  /** 0 visual, 2 picture-in-picture, 3 thermal; null if not reported. */
+  display_mode: number | null;
+  /** What the camera measures: 0 off, 1 spot, 2 area. */
+  measure: number;
+  /** Isotherm band, °C: colours highlight temperatures in it. */
+  isotherm_enabled: boolean;
+  isotherm_lower: number;
+  isotherm_middle: number;
+  isotherm_upper: number;
+  /** Area statistics in area measurement; positions normalised 0..1 over the thermal image. */
+  area: ThermalArea | null;
+}
+
+export interface ThermalArea {
+  rect: [number, number, number, number];
+  avg: number;
+  min: number;
+  max: number;
+  min_x: number;
+  min_y: number;
+  max_x: number;
+  max_y: number;
 }
 
 export interface Telemetry {
@@ -103,8 +136,12 @@ export interface Telemetry {
   usb?: UsbLink;
   /** Server-authoritative camera-link state, so a refreshed page reflects it. */
   linked: boolean;
-  /** FPV video stream; absent when disabled or from older servers. */
-  fpv?: FpvStatus | null;
+  /** Latest thermal camera report; absent until the thermal camera reports. */
+  thermal?: ThermalReport | null;
+  /** Whether the server keeps the isotherm band fitted to the scene. */
+  thermal_auto?: boolean;
+  /** Camera video feeds by name (`cam1`, `cam2`, `fpv`); absent from older servers. */
+  video?: Record<string, VideoStatus>;
 }
 
 // --- Commands (mirror WsCommand in apps/server/src/state.rs) ---
@@ -114,6 +151,14 @@ export type Command =
   | { cmd: "link"; on: boolean }
   /** Yaw recenter; omit `camera` for both. While linked the server resets the master. */
   | { cmd: "reset"; camera?: number }
+  /** Move the thermal spot meter (normalised over the thermal image). */
+  | { cmd: "spot"; x: number; y: number }
+  /** Thermal camera display mode: 0 visual, 2 picture-in-picture, 3 thermal. */
+  | { cmd: "thermal_mode"; mode: 0 | 2 | 3 }
+  /** Isotherm band in °C; the server orders the writes so lower ≤ middle ≤ upper holds. */
+  | { cmd: "isotherm"; lower: number; middle: number; upper: number }
+  /** Keep the isotherm band fitted to the scene (full-frame area measurement). */
+  | { cmd: "thermal_auto"; on: boolean }
   | { cmd: "stop" };
 
 export type Status = "connecting" | "open" | "closed";
@@ -175,17 +220,31 @@ export function isUsbLink(value: unknown): value is UsbLink {
       && vec3(((o as Record<string, unknown>).unverified as Record<string, unknown>).velocity));
 }
 
-const FPV_STATES = ["idle", "connecting", "streaming", "error"];
+const VIDEO_STATES = ["idle", "connecting", "streaming", "error"];
 
-export function isFpvStatus(value: unknown): value is FpvStatus {
-  return record(value) && typeof value.addr === "string"
-    && typeof value.state === "string" && FPV_STATES.includes(value.state)
-    && counter(value.viewers) && counter(value.frames) && counter(value.bytes)
-    && optional(value.error, e => typeof e === "string");
+export function isThermalReport(value: unknown): value is ThermalReport {
+  if (!nums(value, ["spot_x", "spot_y", "spot_temp", "isotherm_lower", "isotherm_middle", "isotherm_upper"])) {
+    return false;
+  }
+  const v = value as Record<string, unknown>;
+  return typeof v.spot_valid === "boolean" && typeof v.isotherm_enabled === "boolean"
+    && byte(v.measure) && optional(v.display_mode, byte)
+    && optional(v.area, a => nums(a, ["avg", "min", "max", "min_x", "min_y", "max_x", "max_y"])
+      && Array.isArray((a as Record<string, unknown>).rect)
+      && ((a as Record<string, unknown>).rect as unknown[]).length === 4
+      && ((a as Record<string, unknown>).rect as unknown[]).every(finite));
 }
 
-/** URL of the server's MJPEG stream; opening it starts the aircraft stream. */
-export const fpvStreamUrl = () => `${location.protocol}//${location.hostname}:8080/fpv.mjpg`;
+export function isVideoStatus(value: unknown): value is VideoStatus {
+  return record(value) && typeof value.source === "string"
+    && typeof value.state === "string" && VIDEO_STATES.includes(value.state)
+    && counter(value.viewers) && counter(value.frames) && counter(value.bytes)
+    && counter(value.dropped) && optional(value.error, e => typeof e === "string");
+}
+
+/** URL of a feed's MJPEG stream; opening it starts that feed on the server. */
+export const videoUrl = (feed: string) =>
+  `/video/${encodeURIComponent(feed)}.mjpg`;
 
 // JSON parsing alone does not validate a snapshot. Reject the whole message
 // before it changes freshness or reaches components that dereference its rows.
@@ -194,7 +253,9 @@ export function isTelemetry(value: unknown): value is Telemetry {
     || typeof value.linked !== "boolean" || !record(value.gimbals) || !record(value.streams)
     || (value.flight !== undefined && !isFlightLink(value.flight))
     || (value.usb !== undefined && !isUsbLink(value.usb))
-    || !optional(value.fpv, isFpvStatus)) return false;
+    || !optional(value.video, v => record(v) && Object.values(v).every(isVideoStatus))
+    || !optional(value.thermal, isThermalReport)
+    || !optional(value.thermal_auto, v => typeof v === "boolean")) return false;
   return Object.values(value.gimbals).every(isGimbal)
     && Object.values(value.streams).every(s => record(s)
       && typeof s.from === "string" && typeof s.to === "string"
@@ -239,6 +300,10 @@ export function useLink() {
         if (closed || wsRef.current !== ws) return;
         try {
           const next: unknown = JSON.parse(ev.data as string);
+          // A malformed thermal report must not hide the rest of the snapshot.
+          if (record(next) && next.thermal != null && !isThermalReport(next.thermal)) {
+            next.thermal = null;
+          }
           if (!isTelemetry(next)) return;
           if (next.frames !== previousFrames) {
             // Require an advancing counter, not a cached snapshot after reconnect.

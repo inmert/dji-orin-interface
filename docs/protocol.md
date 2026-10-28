@@ -410,10 +410,9 @@ panel's attitude at the same moment (143.1°, 2.3°, 1.3°).
 ## FPV camera (third camera)
 
 The M210 has a fixed centre-front FPV camera besides the two gimbal cameras.
-On the RC link it is **`Camera[1]`** (the gimbal cameras are `Camera[0]` and
-`Camera[2]`). It sends the same 37-byte `0x02/0x80` status push as the other two,
-plus a 100-byte `0x02/0xf2` that only it sends; it does not send the `0x02/0x81`
-and `0x02/0x87` reports the gimbal cameras do. Its mount reports as
+(An earlier note here took **`Camera[1]`** for the FPV camera, because it sends a
+100-byte `0x02/0xf2` the others don't. It is in fact the XT2's thermal core; see
+[XT2 thermal camera](#xt2-thermal-camera-camera1).) Its mount reports as
 **`Gimbal[4]`**: a 12-byte `0x04/0x05` whose yaw equals the aircraft heading
 (143.0° against the flight controller's 142.9°) and whose pitch stays 0, so it is
 fixed to the airframe. It does not appear on `ttyACM0` unasked.
@@ -424,8 +423,8 @@ by opening a **UDT** connection (a reliable stream protocol over UDP) to
 brings up (the Orin is `192.168.42.3`). See
 `osdk-core/advanced-sensing/camera_stream/src/dji_camera_stream_link.cpp` in the
 SDK. No DUML or OpenProtocol command precedes it, and the received bytes go
-straight into FFmpeg's H.264 parser, so this is plain H.264, unlike the
-encrypted RC downlink. A passive 15-second listen on that network saw no
+straight into FFmpeg's H.264 parser, so this is plain H.264, like the video in the
+RC downlink. A passive 15-second listen on that network saw no
 traffic at all; the stream only flows once a client connects.
 
 **Verified on the M210 V1 (2026-10-28).** A minimal UDT4 client (SDK's bundled
@@ -442,13 +441,110 @@ FFmpeg 8 on the Orin has only the NVIDIA H.264 decoders (`h264_cuvid`,
 `h264_nvv4l2dec`), so the software decode path is GStreamer's `avdec_h264`
 or `openh264dec`.
 
+## RC USB mux and camera video
+
+What the RC sends the app on its bulk stream (ep1 on our gadget) is not
+encrypted: it is a simple packet mux of DUML and three plain H.264 streams
+(found 2026-10-28 from a raw capture, `RC_DUMP=<file>` on the server). Each
+packet is a 12-byte header, `len` payload bytes, then zero padding to a
+multiple of 8 bytes:
+
+```text
+  00 00 01 ff | len (u16 LE) | ff 00 4c | channel | check | 00 | payload…
+```
+
+`check` is the XOR of the ten header bytes before it. Channels:
+
+| Channel | Content |
+|---------|---------|
+| `0x40` | DUML (what `duml::Decoder` scans) |
+| `0x11` | gimbal 0, Zenmuse XT2: H.264 Baseline 1280×720 ~29 fps (visual or thermal picture, see below) |
+| `0x15` | gimbal 2, Zenmuse Z30: H.264 High 1280×720 ~29 fps |
+| `0x13` | FPV camera, H.264 Main 608×448 (same stream as UDT `:40003`); absent while DJI Pilot runs |
+
+The channel ↔ camera mapping was confirmed by picture through the bridge with
+DJI Pilot running. Pilot (v2.5.1.17 on the CrystalSky) decodes both with
+Android MediaCodec on the tablet's hardware decoder. The RC occasionally puts
+stray bytes inside a video packet (e.g. a NAL unit starting `00 00 01 a7`, with
+the forbidden bit set). The server drops such NAL units before decoding, or the
+parser takes them for a bogus SPS and the decoder stops.
+
+The cameras use intra refresh with few or no IDR frames. On the Orin, NVIDIA's
+`nvv4l2decoder` decodes them only with `is-gdr-stream=true`; without it every
+frame is dropped ("Delta Unit Received, Dropping"). NVIDIA's elements print to
+stdout even with `-q`, so the server runs
+`sh -c 'exec gst-launch-1.0 -q … ! fdsink fd=3 3>&1 1>&2'` and carries the JPEGs
+on fd 3, never on stdout. `crates/protocol/examples/rcmux_split.rs` splits a
+raw capture into per-channel `.h264` files.
+
+## XT2 thermal camera (`Camera[1]`)
+
+Gimbal 0 is a Zenmuse XT2: `Camera[0]` is its visual camera and `Camera[1]` its
+FLIR thermal core (both report camera type `0x1A` in `0x02/0x80`). Decoded
+2026-10-28 from DJI Pilot traffic captured through the bridge
+(`BRIDGE_DUMP_DIR`). Code: `crates/protocol/src/thermal.rs`.
+
+**Report.** `Camera[1]` → `App` pushes `0x02/0xF2` (100 bytes, ~6 Hz).
+Offsets follow dji-firmware-tools' "Camera Tau Param" layout:
+
+| Offset | Field |
+|--------|-------|
+| 6 | palette (`0x18` white hot, `0x19` black hot) |
+| 17 / 21 | f32 spot x / y, normalised 0..1 over the thermal image |
+| 25 | f32 spot temperature, °C |
+| 31 | bit 0: isotherm enabled |
+| 32 | unit (1 = °C) |
+| 33 / 35 / 37 | i16 isotherm lower / middle / upper, °C |
+| 39 | measurement type: 0 off, 1 spot, 2 area |
+| 41 | gain mode |
+| 48 | flags; `0x80` = spot reading valid |
+| 66..72 | u16 area rect left, top, right, bottom, 1/10000 of the image |
+| 74 / 78 / 82 | f32 area avg / min / max, °C |
+| 86..92 | u16 coldest x, y and hottest x, y, 1/10000 |
+| 94 | display mode |
+
+**Settings.** `App[0]` → `Camera[1]`, `0x02/0xF1`, command type `0x40`
+(ACK requested), payload = parameter id + value. The camera ACKs `00`, or `ff`
+when it rejects the value, and echoes the change in its next `0xF2`.
+
+| Payload | Setting |
+|---------|---------|
+| `87 <f32 x> <f32 y>` | spot-meter position (0..1); ACKed `ff` unless measurement type is spot |
+| `8B` / `8C` / `8D` `<i16>` | isotherm lower / middle / upper, °C; rejected if it breaks lower ≤ middle ≤ upper |
+| `8E <u8>` | measurement type: 0 off, 1 spot, 2 area |
+| `8F <u8>` | gain mode, 0/1/2 (Pilot's AUTO/HIGH/LOW; which number is which is unverified) |
+| `95 <u8>` | scene profile 1/2/3 |
+| `97 <u16 l,t,r,b>` | area rectangle, 1/10000 of the image |
+| `98 00 <mode>` | display mode: 3 = thermal picture, 0 = visual, 2 = visual in the capture (maybe PiP) |
+
+Example spot write from Pilot:
+`55 16 04 fc 02 21 7f 50 40 02 f1 87 f3 cc fe 3e 64 a8 0d 3f 85 c0`.
+The palette is a separate command, `0x02/0x42 <id>`. Pilot's "Search people"
+preset sets lower 27 and middle 32 °C, and "Search fire" sets middle 149 and
+upper 538 °C. Both are just isotherm writes, and Pilot sends only the values
+that change. Pilot sends `8E 01` before a spot write, and waits after
+`8E 02` before sending the area rectangle; the camera ignores a rectangle sent
+while it is still switching. The isotherm enable/disable command has not been
+captured yet.
+
+In thermal display mode, channel `0x11` carries the 640×512 (5:4) thermal
+image scaled to the full 720 px height and centred, with black bars: 900 px
+wide from x = 190. The portal maps clicks through that.
+
+**Portal.** The server orders isotherm writes so lower ≤ middle ≤ upper holds
+at every step: it widens to −40…800 °C, sets the middle, then narrows. Its
+**Auto** range keeps full-frame area measurement on and fits the band to
+`[floor(min) − 1, ceil(max) + 1]` with 4 °C of slack, one setup step per
+second. Live video carries no per-pixel temperatures; only R-JPEG photos on
+the SD card do.
+
 ## Observations
 
-- From the controller the Orin receives mostly ~716-byte high-entropy frames
-  (the **camera video downlink**) plus small heartbeat/telemetry frames; many
-  payloads are encrypted.
+- From the controller the Orin receives mostly ~2 KB video packets of the RC
+  mux (see [RC USB mux](#rc-usb-mux-and-camera-video)) plus small DUML
+  heartbeat/telemetry frames.
 - `duml::parse` checks the header CRC-8 before trusting the 10-bit length, so a
-  stray `0x55` in the encrypted/video bytes is rejected in one byte rather than
+  stray `0x55` in the video bytes is rejected in one byte rather than
   skipping up to a kilobyte of real frames. Filter to `hdr_crc_ok && crc_ok`
   for genuine DUML; for a live stream use `duml::Decoder`, which reassembles
   frames that straddle USB read boundaries.

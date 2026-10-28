@@ -1,5 +1,6 @@
 //! WebSocket endpoint: telemetry snapshots down, UI commands up.
 
+use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -11,10 +12,10 @@ use tungstenite::Message;
 use dji_common::logln;
 use dji_protocol::Telemetry;
 
-use crate::fpv::{Fpv, FpvStatus};
 use crate::reader::Tele;
 use crate::state::{self, Shared};
-use crate::{INJECT_HZ, WS_ADDR, die};
+use crate::video::{self, Feeds, VideoStatus};
+use crate::{WS_ADDR, die};
 
 /// What the server broadcasts to the UI: the telemetry snapshot plus the current
 /// link state, so a freshly-loaded or refreshed page reflects the real state.
@@ -23,26 +24,28 @@ struct Snapshot<'a> {
     #[serde(flatten)]
     tele: &'a Telemetry,
     linked: bool,
-    /// FPV video stream state; absent when the stream is disabled.
-    fpv: Option<FpvStatus>,
+    /// State of each camera video feed, by feed name.
+    video: BTreeMap<&'static str, VideoStatus>,
+    /// Whether the thermal auto range is on (server-authoritative).
+    thermal_auto: bool,
 }
 
 /// Accept WebSocket clients forever, one thread each.
-pub fn serve(cmds: Shared, tele: Tele, fpv: Option<Arc<Fpv>>) {
+pub fn serve(cmds: Shared, tele: Tele, feeds: Arc<Feeds>) {
     let listener =
         TcpListener::bind(WS_ADDR).unwrap_or_else(|e| die(&format!("ws: bind {WS_ADDR}: {e}")));
     logln!("ws: listening on {WS_ADDR}");
     for stream in listener.incoming().flatten() {
         let cmds = Arc::clone(&cmds);
         let tele = Arc::clone(&tele);
-        let fpv = fpv.clone();
-        std::thread::spawn(move || client(stream, cmds, tele, fpv));
+        let feeds = Arc::clone(&feeds);
+        std::thread::spawn(move || client(stream, cmds, tele, feeds));
     }
 }
 
 /// One WebSocket client: stream telemetry down, apply commands up. On any exit
 /// (disconnect, error) release every gimbal — a dead-man stop.
-fn client(stream: TcpStream, cmds: Shared, tele: Tele, fpv: Option<Arc<Fpv>>) {
+fn client(stream: TcpStream, cmds: Shared, tele: Tele, feeds: Arc<Feeds>) {
     let peer = stream
         .peer_addr()
         .map(|a| a.to_string())
@@ -69,17 +72,23 @@ fn client(stream: TcpStream, cmds: Shared, tele: Tele, fpv: Option<Arc<Fpv>>) {
         .set_read_timeout(Some(Duration::from_millis(50)));
     logln!("ws: client {peer} connected");
     let mut last_send = Instant::now() - Duration::from_secs(1);
-    let interval = Duration::from_millis(1000 / INJECT_HZ);
+    // Display snapshots need not run at the gimbal command injection rate.
+    // Commands are still read on every iteration, without this throttle.
+    let interval = Duration::from_millis(100);
     loop {
         if last_send.elapsed() >= interval {
-            let linked = cmds.lock().unwrap().linked;
-            let fpv = fpv.as_ref().map(|f| f.status());
+            let (linked, thermal_auto) = {
+                let c = cmds.lock().unwrap();
+                (c.linked, c.thermal_auto)
+            };
+            let video = video::statuses(&feeds);
+            let t = tele.lock().unwrap().clone();
             let json = {
-                let t = tele.lock().unwrap();
                 serde_json::to_string(&Snapshot {
                     tele: &t,
                     linked,
-                    fpv,
+                    video,
+                    thermal_auto,
                 })
                 .unwrap_or_else(|_| "{}".into())
             };
@@ -89,7 +98,10 @@ fn client(stream: TcpStream, cmds: Shared, tele: Tele, fpv: Option<Arc<Fpv>>) {
             last_send = Instant::now();
         }
         match ws.read() {
-            Ok(Message::Text(t)) => state::handle(t.as_str(), &cmds),
+            Ok(Message::Text(t)) => {
+                let thermal = tele.lock().unwrap().thermal;
+                state::handle(t.as_str(), &cmds, thermal.as_ref());
+            }
             Ok(Message::Close(_)) => break,
             Ok(_) => {} // ping/pong/binary: ignore
             Err(tungstenite::Error::Io(e))

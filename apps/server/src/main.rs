@@ -8,8 +8,10 @@
 //! Independently, [`flight`] reads what the aircraft pushes on its own ports,
 //! receive-only: the OSDK UART broadcast (attitude, velocity, GPS, battery,
 //! status) and the DUML reports on its USB API port (attitude, flight mode).
-//! [`fpv`] streams the FPV camera's H.264 (UDT over the aircraft's USB network)
-//! to the browser as MJPEG, connecting only while someone watches.
+//! [`video`] decodes the cameras' H.264 on the Orin's hardware decoder and
+//! streams it to the browser as MJPEG while someone watches: the gimbal
+//! cameras from the RC's USB mux, the FPV camera over UDT on the aircraft's
+//! USB network.
 //!
 //! ```text
 //!   browser  ──HTTP :8080 / WS :8081──  server (Orin, gadget)  ──USB──  RC ── aircraft
@@ -28,14 +30,17 @@
 //! disables it) and `OSDK_BAUD` its rate (default 230400). `USB_ACM` picks the
 //! aircraft's USB API serial port (default `/dev/ttyACM0`; `off` disables it).
 //! `FPV_UDT` is the FPV camera's UDT address (default `192.168.42.2:40003`;
-//! `off` disables the video).
+//! `off` disables that feed). `RC_VIDEO` maps the gimbal-camera feeds to RC
+//! mux channels (default `cam1=0x11,cam2=0x15`; `off` disables them). `RC_DUMP=<file>` appends the raw RC→Orin bytes
+//! to a file for offline analysis.
 
 mod flight;
-mod fpv;
 mod http;
 mod injector;
 mod reader;
 mod state;
+mod thermal_auto;
+mod video;
 mod ws;
 
 use std::net::SocketAddrV4;
@@ -52,6 +57,7 @@ use dji_transport::usb::ffs::{self, Event};
 
 use reader::Tele;
 use state::{Commands, Shared};
+use video::{Feed, Source};
 
 const HTTP_ADDR: &str = "0.0.0.0:8080";
 const WS_ADDR: &str = "0.0.0.0:8081";
@@ -75,6 +81,46 @@ fn needs_spawn(h: &Option<JoinHandle<()>>) -> bool {
     h.as_ref().is_none_or(JoinHandle::is_finished)
 }
 
+/// The camera feeds from `FPV_UDT` and `RC_VIDEO` (see the module docs).
+/// Nothing is opened until a viewer subscribes.
+fn video_feeds() -> video::Feeds {
+    let mut feeds = video::Feeds::new();
+    let fpv = match std::env::var("FPV_UDT").as_deref() {
+        Ok("off") => None,
+        Ok(addr) => Some(
+            addr.parse::<SocketAddrV4>()
+                .unwrap_or_else(|e| die(&format!("FPV_UDT={addr}: {e}"))),
+        ),
+        Err(_) => Some(SocketAddrV4::new([192, 168, 42, 2].into(), 40003)),
+    };
+    if let Some(addr) = fpv {
+        // 608×448 already: keep the stream's own size.
+        feeds.insert("fpv", Feed::new("fpv", Source::Udt(addr), None));
+    }
+    let rc = std::env::var("RC_VIDEO").unwrap_or_else(|_| "cam1=0x11,cam2=0x15".into());
+    if rc != "off" {
+        for entry in rc.split(',') {
+            let parsed = entry.split_once('=').and_then(|(name, ch)| {
+                let name = match name.trim() {
+                    "cam1" => "cam1",
+                    "cam2" => "cam2",
+                    _ => return None,
+                };
+                let ch = u8::from_str_radix(ch.trim().trim_start_matches("0x"), 16).ok()?;
+                Some((name, ch))
+            });
+            let Some((name, ch)) = parsed else {
+                die(&format!(
+                    "RC_VIDEO: bad entry {entry:?} (want cam1=0x11,cam2=0x15)"
+                ));
+            };
+            // 1280×720 streams, scaled down to keep the MJPEG light.
+            feeds.insert(name, Feed::new(name, Source::Rc(ch), Some((640, 360))));
+        }
+    }
+    feeds
+}
+
 fn main() {
     dji_common::log::init(None);
     let args: Vec<String> = std::env::args().collect();
@@ -87,25 +133,27 @@ fn main() {
     let cmds: Shared = Arc::new(Mutex::new(Commands::default()));
     let tele: Tele = Arc::new(Mutex::new(Telemetry::default()));
 
-    // FPV video: nothing connects until a viewer opens the stream.
-    let fpv = match std::env::var("FPV_UDT").as_deref() {
-        Ok("off") => None,
-        Ok(addr) => Some(
-            addr.parse::<SocketAddrV4>()
-                .unwrap_or_else(|e| die(&format!("FPV_UDT={addr}: {e}"))),
-        ),
-        Err(_) => Some(SocketAddrV4::new([192, 168, 42, 2].into(), 40003)),
-    }
-    .map(fpv::Fpv::new);
+    let feeds = Arc::new(video_feeds());
+    let rc_feeds: Vec<_> = feeds
+        .values()
+        .filter(|f| f.rc_channel().is_some())
+        .cloned()
+        .collect();
 
     // Web front end + WebSocket come up immediately (independent of the USB link).
     {
-        let fpv = fpv.clone();
-        std::thread::spawn(move || http::serve(web_root, fpv));
+        let feeds = Arc::clone(&feeds);
+        std::thread::spawn(move || http::serve(web_root, feeds));
     }
     {
         let (cmds, tele) = (Arc::clone(&cmds), Arc::clone(&tele));
-        std::thread::spawn(move || ws::serve(cmds, tele, fpv));
+        std::thread::spawn(move || ws::serve(cmds, tele, feeds));
+    }
+
+    // Thermal auto range: idle until the UI turns it on.
+    {
+        let (tele, cmds) = (Arc::clone(&tele), Arc::clone(&cmds));
+        std::thread::spawn(move || thermal_auto::run(tele, cmds));
     }
 
     // Direct aircraft ports: receive-only, independent of the RC link.
@@ -150,8 +198,9 @@ fn main() {
             if needs_spawn(&reader_h) {
                 match open("ep1") {
                     Ok(ep1) => {
-                        let tele = Arc::clone(&tele);
-                        reader_h = Some(std::thread::spawn(move || reader::run(ep1, tele)));
+                        let (tele, rc_feeds) = (Arc::clone(&tele), rc_feeds.clone());
+                        reader_h =
+                            Some(std::thread::spawn(move || reader::run(ep1, tele, rc_feeds)));
                         logln!("link up: telemetry reader running");
                     }
                     Err(e) => logln!("gadget: {e}"),

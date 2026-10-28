@@ -618,7 +618,7 @@ const StarBorder = <T extends React.ElementType = 'button'>({
 
   useEffect(() => {
     wakeRef.current?.();
-  });
+  }, [color, trailColor, duration, thickness, radius, trailLength, stars, glow, sparkle, direction, hover, clickPulse, theme]);
 
   return (
     <Component

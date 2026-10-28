@@ -70,6 +70,8 @@ crates/
     src/flyc.rs, src/flyc/osd.rs  flight controller 0x03/0x43 report decode
     src/osdk.rs                 OSDK OpenProtocol (0xAA) framing, decode-only
     src/osdk/broadcast.rs       OSDK flight-data broadcast decode
+    src/rcmux.rs                RC USB packet mux demuxer (DUML + camera video channels)
+    src/thermal.rs              XT2 thermal core: 0xF2 report decode, 0xF1 settings frames
     src/telemetry.rs            link snapshot for the web UI
     tests/  benches/  examples/ integration tests, CRC/scan bench, decode examples
   transport/                  INFRASTRUCTURE — libc via hand-declared externs
@@ -96,7 +98,8 @@ apps/
     src/injector.rs             streams gimbal commands to the RC (ep2)
     src/reader.rs               decodes RC telemetry (ep1)
     src/flight.rs               direct aircraft readers: OSDK UART + USB API port (rx only)
-    src/fpv.rs                  FPV video: UDT H.264 → GStreamer → MJPEG, on demand
+    src/video.rs                camera video: RC mux / UDT H.264 → NVDEC → MJPEG, on demand
+    src/thermal_auto.rs         thermal auto range (fits the isotherm band to the scene)
     src/ws.rs / http.rs         WebSocket + static file server
 web/                          Vite + React + TypeScript front end (built to web/dist)
 scripts/                      gadget bring-up/teardown + run_{capture,bridge,server}.sh
@@ -241,18 +244,44 @@ flight mode, satellite count and the camera 1 gimbal angles. Position, height
 and velocity are shown as unverified until checked with a GPS fix and in
 motion. `USB_ACM` picks another port, or `off` disables it.
 
-**FPV video.** The FPV camera card has a **Start video** button. While at
-least one browser watches, the server holds a UDT connection to the aircraft's
-FPV stream (`192.168.42.2:40003` on the USB network link; raw H.264, 608×448,
-~29 fps), decodes it with a `gst-launch-1.0` child (`avdec_h264` → `jpegenc`)
-and serves it as MJPEG at `http://<orin>:8080/fpv.mjpg`. The connection is
-dropped 3 s after the last viewer leaves, so nothing is sent to the aircraft
-when nobody watches; the client only exchanges UDT's own handshake and ACKs.
-Each viewer receives about 10 Mbit/s. Needs GStreamer with `gst-libav`
-(`apt install gstreamer1.0-tools gstreamer1.0-libav gstreamer1.0-plugins-good
-gstreamer1.0-plugins-bad`). `FPV_UDT` sets another address, or `off`
-disables it. MJPEG keeps it working from any browser over plain HTTP, where
-in-browser H.264 decoding (WebCodecs) would need HTTPS.
+**Camera video.** Each camera card has a **Start video** button. The server
+serves three feeds as MJPEG at `http://<orin>:8080/video/<feed>.mjpg`:
+
+| Feed | Camera | Source |
+|------|--------|--------|
+| `cam1` | gimbal 0, Zenmuse XT2 (visual or thermal picture) | RC USB mux channel `0x11`, 1280×720, scaled to 640×360 |
+| `cam2` | gimbal 2, Zenmuse Z30 | RC USB mux channel `0x15`, 1280×720, scaled to 640×360 |
+| `fpv` | fixed FPV camera | UDT `192.168.42.2:40003` on the aircraft's USB network, 608×448 |
+
+A feed decodes only while someone watches and stops 3 s after the last viewer
+leaves. The RC feeds are receive-only: the reader already gets those bytes.
+The FPV feed opens its UDT connection only while watched, and sends only UDT's
+own handshake and ACKs. Decoding runs in a `gst-launch-1.0` child on the Orin's
+hardware decoder (`nvv4l2decoder is-gdr-stream=true` → `nvvidconv` →
+`nvjpegenc`, from NVIDIA's L4T GStreamer plugins). That costs about a quarter
+of the CPU of software decoding, and each viewer gets about 5 Mbit/s per
+feed. `RC_VIDEO` maps the RC feeds to mux channels (default
+`cam1=0x11,cam2=0x15`, or `off`). `FPV_UDT` sets the FPV address, or `off`.
+`RC_DUMP=<file>` appends the raw RC→Orin bytes to a file (capped at 512 MB) for
+offline analysis; `cargo run -p dji-protocol --example rcmux_split` splits
+one into per-channel H.264. MJPEG keeps it working from any browser over plain
+HTTP, where in-browser H.264 decoding (WebCodecs) would need HTTPS.
+
+**Thermal camera.** Under camera 01 the portal shows the XT2's thermal
+controls, sent to its thermal core (`Camera[1]`, see
+[docs/protocol.md](docs/protocol.md#xt2-thermal-camera-camera1)):
+**Visual / IR** display mode; in IR, click the video to move the spot meter
+and read its temperature. **Range** sets the isotherm band: **Auto** keeps it
+fitted to the coldest and hottest temperatures in view (full-frame area
+measurement, refit with 4 °C of hysteresis); **People** (27 · 32 · 38 °C) and
+**Fire** (27 · 149 · 538 °C) match DJI Pilot's presets; or type a custom
+lower · middle · upper. The server orders the writes so the camera never sees
+lower > middle > upper. Every thermal setting is a command to the aircraft.
+
+**Bridge captures.** `BRIDGE_DUMP_DIR=<dir>` makes `bridge` save both raw
+streams (`rc2tab.bin`, `tab2rc.bin`, each with an `.idx` of read times; up to
+512 MB each). It never overwrites an earlier dump, so use a new directory per
+run.
 
 To check a raw capture offline:
 `cargo run -p dji-protocol --example osdk_broadcast -- <capture.bin>`.
@@ -286,11 +315,9 @@ These effects do not process camera video. No new runtime packages are required.
 Preview the design with `cd web && npm run dev` and append `?preview=1` to the
 URL; this never opens the aircraft control WebSocket.
 
-Gimbal camera video is still a research spike: the RC downlink is DJI's
-encrypted/encoded stream, so cameras 01 and 02 show a placeholder. The
-aircraft's third, fixed **FPV camera** at the centre front has live video:
-the UI shows it as camera 03 with its mount's heading, its status-report count
-and the video stream described above (see
+Cameras 01 and 02 show the gimbal cameras' live video from the RC link. The
+aircraft's third, fixed **FPV camera** at the centre front is camera 03, with
+its mount's heading and the video stream described above (see
 [docs/protocol.md](docs/protocol.md#fpv-camera-third-camera)). It has no controls.
 
 ## Status
@@ -315,10 +342,16 @@ and the video stream described above (see
 - [ ] OSDK UART via the Orin's own pins: receive-only, cause on the Orin side not isolated
 - [x] Portal yaw-recenter per camera and recenter-all, verified on the aircraft
       (2026-10-28; see docs/protocol.md)
-- [x] Third (FPV) camera identified: `Camera[1]`, fixed mount `Gimbal[4]`; shown in the UI
+- [x] Third (FPV) camera identified: fixed mount `Gimbal[4]`; shown in the UI
 - [x] FPV camera video received as H.264 over USB/UDT (192.168.42.2:40003), decoded offline
 - [x] Live FPV camera video in the UI (MJPEG from the UDT stream, on demand)
-- [ ] Gimbal camera video (RC downlink encrypted; try the USB/UDT main-camera port 40001)
+- [x] RC USB downlink decoded: plain packet mux of DUML + three H.264 streams
+- [x] Live gimbal camera video in the UI (both cameras, Orin hardware decode → MJPEG)
+- [x] XT2 thermal: display mode, spot meter, isotherm band + presets, area measurement
+      (decoded from DJI Pilot via the bridge; display mode, area and band set from the portal on the aircraft)
+- [ ] Thermal auto range: verify the latest setup fix on the aircraft
+- [ ] Isotherm enable/disable command (capture from Pilot)
+- [ ] Smoother browser video (frame pacing)
 - [ ] Send/inject flight commands to the aircraft
 
 ## Acknowledgements

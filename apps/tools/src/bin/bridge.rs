@@ -29,12 +29,17 @@
 //! secured.
 //!
 //! Usage: `bridge <ffs_mount_dir>`        (run as root)
+//!
+//! `BRIDGE_DUMP_DIR=<dir>` also saves both raw streams for offline analysis
+//! (e.g. of the video mux): `rc2tab.bin` / `tab2rc.bin`, each with an `.idx`
+//! of `<f64 seconds since start, u32 byte offset>` (little-endian) per read.
 
-use std::io::ErrorKind;
+use std::fs::File;
+use std::io::{BufWriter, ErrorKind, Write};
 use std::os::fd::AsFd;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dji_common::log::hex;
 use dji_common::logln;
@@ -106,14 +111,79 @@ fn hex_sets_from_env() -> Vec<u8> {
         .collect()
 }
 
+/// When the bridge started, for the dump indexes.
+static START: OnceLock<Instant> = OnceLock::new();
+
+/// Size limit for each direction's dump, so a forgotten dump can't fill the
+/// disk (and every offset fits the index's u32).
+const DUMP_CAP: u64 = 512 * 1024 * 1024;
+
+/// Raw copy of one direction (`BRIDGE_DUMP_DIR`): the bytes plus an index of
+/// when each read arrived. Write errors and the size cap stop the dump, never
+/// the relay. An existing dump is never overwritten: use a new directory.
+struct Dump {
+    data: BufWriter<File>,
+    idx: BufWriter<File>,
+    offset: u64,
+}
+
+impl Dump {
+    fn open(name: &str) -> Option<Self> {
+        let dir = std::env::var("BRIDGE_DUMP_DIR").ok()?;
+        let path = |ext| format!("{dir}/{name}.{ext}");
+        if let Some(p) = [path("bin"), path("idx")]
+            .into_iter()
+            .find(|p| std::path::Path::new(p).exists())
+        {
+            logln!("dump: {p} exists; not overwriting it (set a new BRIDGE_DUMP_DIR); no dump");
+            return None;
+        }
+        let create = |ext| File::options().write(true).create_new(true).open(path(ext));
+        match (create("bin"), create("idx")) {
+            (Ok(data), Ok(idx)) => {
+                logln!("dump: {dir}/{name}.bin");
+                Some(Self {
+                    data: BufWriter::new(data),
+                    idx: BufWriter::new(idx),
+                    offset: 0,
+                })
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                logln!("dump: cannot create {dir}/{name}: {e}");
+                None
+            }
+        }
+    }
+
+    fn write(&mut self, chunk: &[u8]) -> std::io::Result<()> {
+        if self.offset + chunk.len() as u64 > DUMP_CAP {
+            let _ = self.data.flush().and_then(|()| self.idx.flush());
+            return Err(std::io::Error::other(format!("reached {DUMP_CAP} bytes")));
+        }
+        let secs = START.get_or_init(Instant::now).elapsed().as_secs_f64();
+        self.idx.write_all(&secs.to_le_bytes())?;
+        self.idx.write_all(
+            &u32::try_from(self.offset)
+                .expect("offset below DUMP_CAP")
+                .to_le_bytes(),
+        )?;
+        self.data.write_all(chunk)?;
+        self.offset += chunk.len() as u64;
+        Ok(())
+    }
+}
+
 /// Forward one raw bulk stream verbatim, logging the CRC-valid DUML it carries.
-/// `label` tags the log lines; `read`/`write` move the bytes.
+/// `label` tags the log lines; `read`/`write` move the bytes; `dump` names the
+/// raw copy written when `BRIDGE_DUMP_DIR` is set.
 fn relay(
     label: &'static str,
+    dump: &str,
     mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
     write: impl Fn(&[u8]) -> std::io::Result<usize>,
 ) {
     let hex_sets = hex_sets_from_env();
+    let mut dump = Dump::open(dump);
     let mut decoder = duml::Decoder::new();
     let mut buf = vec![0u8; 16384];
     loop {
@@ -136,6 +206,12 @@ fn relay(
                         }
                     }
                 }
+                if let Some(d) = dump.as_mut()
+                    && let Err(e) = d.write(&buf[..n])
+                {
+                    logln!("{label}: dump write failed: {e}; dump stopped");
+                    dump = None;
+                }
                 decoder.push(&buf[..n]);
                 decoder.drain(|f| {
                     if f.crc_ok {
@@ -156,6 +232,9 @@ fn relay(
                 let code = e.raw_os_error().unwrap_or(0);
                 if code == usb::errno::ENODEV || code == usb::errno::ESHUTDOWN {
                     logln!("{label}: endpoint gone; relay stopping");
+                    if let Some(d) = dump.as_mut() {
+                        let _ = d.data.flush().and_then(|()| d.idx.flush());
+                    }
                     return;
                 }
                 logln!("{label}: read error: {e}");
@@ -181,6 +260,7 @@ fn start_relays(ffs_dir: &str, tablet: &Arc<Device>, eps: BulkEndpoints) {
         std::thread::spawn(move || {
             relay(
                 "RC->TAB",
+                "rc2tab",
                 |buf| usb::read(ep1.as_fd(), buf),
                 |data| tablet.bulk_write(out_ep, data, 0),
             );
@@ -193,6 +273,7 @@ fn start_relays(ffs_dir: &str, tablet: &Arc<Device>, eps: BulkEndpoints) {
         std::thread::spawn(move || {
             relay(
                 "TAB->RC",
+                "tab2rc",
                 |buf| tablet.bulk_read(in_ep, buf, 0),
                 |data| usb::write(ep2.as_fd(), data),
             );
@@ -202,6 +283,7 @@ fn start_relays(ffs_dir: &str, tablet: &Arc<Device>, eps: BulkEndpoints) {
 
 fn main() {
     dji_common::log::init(None);
+    START.get_or_init(Instant::now);
     let args: Vec<String> = std::env::args().collect();
     let Some(ffs_dir) = args.get(1).cloned() else {
         eprintln!("usage: {} <ffs_mount_dir>", args[0]);

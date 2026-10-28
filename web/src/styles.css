@@ -1444,16 +1444,17 @@ footer > span:first-child {
   }
 }
 
-/* FPV live video: the MJPEG <img> fills the viewport behind the overlays. */
-.fpv-video {
+/* Live camera video: the MJPEG <img> fills the viewport behind the overlays. */
+.video-view {
   height: auto;
-  aspect-ratio: 608 / 448;
+}
+.video-card {
   max-height: 448px;
   margin-bottom: 16px;
   border: 1px solid #243844;
   border-radius: 8px;
 }
-.fpv-video img {
+.video-view canvas {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -1461,18 +1462,21 @@ footer > span:first-child {
   object-fit: contain;
   background: #05090c;
 }
-.fpv-video:not(.live) img {
+.video-view:not(.live) canvas {
   visibility: hidden;
 }
-.fpv-video .viewport-label,
-.fpv-video .viewport-corner,
-.fpv-video .fpv-toggle {
+.video-view .viewport-label,
+.video-view .viewport-corner,
+.video-view .video-toggle {
   z-index: 2;
 }
-.fpv-video.live .viewport-label .dot {
+.video-view.live .viewport-label .dot {
   background: #4ee0a8;
 }
-.fpv-toggle {
+.video-view.live .reticle {
+  opacity: 0.35;
+}
+.video-toggle {
   position: absolute;
   left: 14px;
   bottom: 12px;
@@ -1485,10 +1489,147 @@ footer > span:first-child {
   border-radius: 6px;
   cursor: pointer;
 }
-.fpv-toggle:hover:not(:disabled) {
+.video-toggle:hover:not(:disabled) {
   border-color: #6fa9bf;
 }
-.fpv-toggle:disabled {
+.video-toggle:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Isolate video paints from the surrounding telemetry/control layout. */
+.video-view { contain: layout paint; }
+.telemetry-section { content-visibility: auto; contain-intrinsic-size: auto 600px; }
+
+/* Thermal camera: measurement markers, Visual / IR, range controls. */
+.video-view.pickable {
+  cursor: crosshair;
+}
+.thermal-spot {
+  position: absolute;
+  z-index: 2;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.thermal-spot-ring {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #000a, inset 0 0 0 1px #000a;
+}
+.thermal-spot.hot .thermal-spot-ring {
+  border-color: #ff5a4f;
+}
+.thermal-spot.cold .thermal-spot-ring {
+  border-color: #59b8ff;
+}
+.thermal-spot-label {
+  position: absolute;
+  left: 18px;
+  top: -20px;
+  padding: 2px 6px;
+  white-space: nowrap;
+  font: 12px ui-monospace, monospace;
+  color: #fff;
+  background: #000b;
+  border-radius: 4px;
+}
+.thermal-spot.pending .thermal-spot-ring {
+  border-style: dashed;
+}
+.thermal-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #243844;
+}
+.thermal-row {
+  display: flex;
+  align-items: center;
+  gap: 12px 16px;
+  flex-wrap: wrap;
+}
+.thermal-modes {
+  display: inline-flex;
+  border: 1px solid #3a5868;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.thermal-modes button {
+  padding: 5px 14px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: #aec5d0;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.thermal-modes button + button {
+  border-left: 1px solid #3a5868;
+}
+.thermal-modes button.active {
+  color: #0b141a;
+  background: #f0b84a;
+}
+.thermal-modes button:disabled,
+.thermal-band button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.thermal-reading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.thermal-reading strong {
+  font: 18px ui-monospace, monospace;
+  color: #f0b84a;
+}
+.thermal-band-now {
+  font-size: 12px;
+  color: #aec5d0;
+}
+.thermal-band {
+  display: flex;
+  align-items: center;
+  gap: 8px 10px;
+  flex-wrap: wrap;
+}
+.thermal-band label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #7893a2;
+}
+.thermal-band input {
+  width: 64px;
+  padding: 4px 6px;
+  font: 12px ui-monospace, monospace;
+  color: #d5e6ee;
+  background: #091217;
+  border: 1px solid #3a5868;
+  border-radius: 5px;
+}
+.thermal-band button {
+  padding: 5px 12px;
+  font-size: 11px;
+  color: #d5e6ee;
+  background: #0c1a23;
+  border: 1px solid #3a5868;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.thermal-band button.link {
+  border-color: transparent;
+  background: transparent;
+  color: #7893a2;
+}
+.thermal-error {
+  font-size: 11px;
+  color: #ff8a80;
 }

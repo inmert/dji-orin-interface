@@ -220,6 +220,9 @@ export function App() {
                 stopGeneration={stopGeneration}
                 camera={1}
                 attitude={telemetry.gimbals["0"]}
+                video={telemetry.video?.cam1}
+                thermal={telemetry.thermal}
+                thermalAuto={telemetry.thermal_auto ?? false}
                 linked={linked}
                 disabled={!ready}
                 send={send}
@@ -228,6 +231,7 @@ export function App() {
                 stopGeneration={stopGeneration}
                 camera={2}
                 attitude={telemetry.gimbals["2"]}
+                video={telemetry.video?.cam2}
                 linked={linked}
                 disabled={!ready || linked}
                 send={send}

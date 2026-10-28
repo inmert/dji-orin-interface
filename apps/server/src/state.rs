@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use dji_common::logln;
 use dji_protocol::gimbal::{Camera, GimbalMove};
+use dji_protocol::thermal::{DisplayMode, Isotherm, Measure, Report};
 
 /// Desired gimbal state, one slot per camera, updated by the WS clients and
 /// streamed to ep2 by the injector thread.
@@ -23,11 +24,78 @@ pub struct Commands {
     pub lock_pending: Option<bool>,
     /// Yaw recenters for the injector to emit once each, in order, no repeats.
     pub reset_pending: Vec<Camera>,
+    /// Thermal camera settings for the injector to send once each, in order.
+    pub thermal_pending: Vec<ThermalCmd>,
+    /// Reserve queue capacity while the injector writes without holding this mutex.
+    thermal_in_flight: usize,
+    /// Keep the isotherm band fitted to the scene ([`crate::thermal_auto`]).
+    pub thermal_auto: bool,
+}
+
+/// A thermal camera setting from the UI (see [`dji_protocol::thermal`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ThermalCmd {
+    /// Move the spot meter to normalised `(x, y)` on the thermal image.
+    Spot(f32, f32),
+    /// Switch what the thermal camera's video shows.
+    Mode(DisplayMode),
+    /// Set one isotherm bound, °C.
+    Isotherm(Isotherm, i16),
+    /// Choose what the camera measures.
+    Measure(Measure),
+    /// Area-measurement rectangle: left, top, right, bottom (0..1).
+    Area([f32; 4]),
+}
+
+/// Isotherm bounds in °C: lower, middle, upper.
+pub type Band = (i16, i16, i16);
+const MAX_THERMAL_PENDING: usize = 64;
+
+/// The isotherm bounds the UI may set (Pilot's fire preset went to 751 °C;
+/// the XT2's low-gain range ends around there).
+pub const ISOTHERM_RANGE: std::ops::RangeInclusive<i16> = -40..=800;
+
+/// Widen over every accepted target before changing the middle, then narrow.
+/// Always send all steps: reports can lag previously sent or in-flight commands.
+/// Include the reported extremes as well, in case Pilot set a wider band.
+pub fn isotherm_sequence(cur: Band, target: Band) -> Vec<ThermalCmd> {
+    vec![
+        ThermalCmd::Isotherm(Isotherm::Lower, cur.0.min(*ISOTHERM_RANGE.start())),
+        ThermalCmd::Isotherm(Isotherm::Upper, cur.2.max(*ISOTHERM_RANGE.end())),
+        ThermalCmd::Isotherm(Isotherm::Middle, target.1),
+        ThermalCmd::Isotherm(Isotherm::Lower, target.0),
+        ThermalCmd::Isotherm(Isotherm::Upper, target.2),
+    ]
+}
+
+/// The camera's current isotherm bounds from its report.
+pub fn band_of(r: &Report) -> Band {
+    (r.isotherm_lower, r.isotherm_middle, r.isotherm_upper)
 }
 
 pub type Shared = Arc<Mutex<Commands>>;
 
 impl Commands {
+    pub fn thermal_capacity(&self, additional: usize) -> bool {
+        self.thermal_pending.len() + self.thermal_in_flight + additional <= MAX_THERMAL_PENDING
+    }
+
+    pub fn take_thermal(&mut self) -> Vec<ThermalCmd> {
+        let pending = std::mem::take(&mut self.thermal_pending);
+        self.thermal_in_flight = pending.len();
+        pending
+    }
+
+    pub fn thermal_sent(&mut self) {
+        self.thermal_in_flight -= 1;
+    }
+
+    pub fn retry_thermal(&mut self, unsent: &[ThermalCmd]) {
+        let newer = std::mem::take(&mut self.thermal_pending);
+        self.thermal_pending = unsent.iter().copied().chain(newer).collect();
+        self.thermal_in_flight = 0;
+    }
+
     fn set(&mut self, cam: Camera, mv: GimbalMove) {
         match cam {
             Camera::One => self.cam1 = mv,
@@ -106,10 +174,21 @@ pub enum WsCommand {
     },
     /// Release every gimbal immediately.
     Stop,
+    /// Move the thermal spot meter (normalised 0..1 on the thermal image).
+    Spot { x: f32, y: f32 },
+    /// Set the thermal camera's display mode (0 visual, 2 PiP, 3 thermal).
+    #[serde(rename = "thermal_mode")]
+    ThermalMode { mode: u8 },
+    /// Set the isotherm band, °C (lower ≤ middle ≤ upper).
+    Isotherm { lower: i16, middle: i16, upper: i16 },
+    /// Fit the isotherm band to the scene automatically, or stop doing so.
+    #[serde(rename = "thermal_auto")]
+    ThermalAuto { on: bool },
 }
 
-/// Parse one UI message and apply it to the shared state.
-pub fn handle(text: &str, cmds: &Shared) {
+/// Parse one UI message and apply it to the shared state. `thermal` is the
+/// thermal camera's latest report, which some thermal commands depend on.
+pub fn handle(text: &str, cmds: &Shared, thermal: Option<&Report>) {
     match serde_json::from_str::<WsCommand>(text) {
         Ok(WsCommand::Gimbal {
             camera,
@@ -139,6 +218,74 @@ pub fn handle(text: &str, cmds: &Shared) {
             logln!("reset: queued for {camera:?} (None = all)");
         }
         Ok(WsCommand::Stop) => cmds.lock().unwrap().release_all(),
+        Ok(WsCommand::Spot { x, y }) => {
+            if !(x.is_finite() && y.is_finite()) {
+                return logln!("ws: spot: bad position");
+            }
+            let mut c = cmds.lock().unwrap();
+            if !c.thermal_capacity(2) {
+                return logln!("ws: thermal queue full; spot rejected");
+            }
+            // Only the latest unsent spot (and its switch to spot measurement)
+            // matters.
+            c.thermal_pending.retain(|t| {
+                !matches!(t, ThermalCmd::Spot(..) | ThermalCmd::Measure(Measure::Spot))
+            });
+            // The camera rejects a spot unless it is in spot measurement, which
+            // also ends area-based auto range.
+            if thermal.is_none_or(|r| r.measure != Measure::Spot as u8) {
+                c.thermal_auto = false;
+                c.thermal_pending.push(ThermalCmd::Measure(Measure::Spot));
+            }
+            c.thermal_pending.push(ThermalCmd::Spot(x, y));
+        }
+        Ok(WsCommand::ThermalMode { mode }) => match DisplayMode::from_u8(mode) {
+            Some(m) => {
+                let mut c = cmds.lock().unwrap();
+                if let Some(mode) = c
+                    .thermal_pending
+                    .iter_mut()
+                    .find(|t| matches!(t, ThermalCmd::Mode(_)))
+                {
+                    *mode = ThermalCmd::Mode(m);
+                } else if c.thermal_capacity(1) {
+                    c.thermal_pending.push(ThermalCmd::Mode(m));
+                } else {
+                    return logln!("ws: thermal queue full; mode rejected");
+                }
+                logln!("thermal: display mode {mode} queued");
+            }
+            None => logln!("ws: thermal_mode: unknown mode {mode}"),
+        },
+        Ok(WsCommand::Isotherm {
+            lower,
+            middle,
+            upper,
+        }) => {
+            let target = (lower, middle, upper);
+            if !(lower <= middle && middle <= upper)
+                || ![lower, upper].iter().all(|v| ISOTHERM_RANGE.contains(v))
+            {
+                return logln!("ws: isotherm: {target:?} out of order or range");
+            }
+            let Some(r) = thermal else {
+                return logln!("ws: isotherm: no thermal report yet");
+            };
+            let mut c = cmds.lock().unwrap();
+            if !c.thermal_capacity(5) {
+                return logln!("ws: thermal queue full; isotherm rejected");
+            }
+            c.thermal_auto = false;
+            c.thermal_pending
+                .retain(|t| !matches!(t, ThermalCmd::Isotherm(..)));
+            c.thermal_pending
+                .extend(isotherm_sequence(band_of(r), target));
+            logln!("thermal: isotherm {target:?} queued (auto off)");
+        }
+        Ok(WsCommand::ThermalAuto { on }) => {
+            cmds.lock().unwrap().thermal_auto = on;
+            logln!("thermal: auto range {}", if on { "on" } else { "off" });
+        }
         Err(e) => logln!("ws: bad command: {e}"),
     }
 }
@@ -146,6 +293,161 @@ pub fn handle(text: &str, cmds: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn handle_t(text: &str, cmds: &Shared) {
+        handle(text, cmds, None);
+    }
+
+    fn pending(cmds: &Shared) -> Vec<ThermalCmd> {
+        cmds.lock().unwrap().thermal_pending.clone()
+    }
+
+    fn spot_report(band: Band) -> Report {
+        Report {
+            measure: Measure::Spot as u8,
+            isotherm_lower: band.0,
+            isotherm_middle: band.1,
+            isotherm_upper: band.2,
+            ..Report::default()
+        }
+    }
+
+    #[test]
+    fn isotherm_sequence_keeps_the_bounds_ordered_at_every_step() {
+        let cases = [
+            ((27, 32, 38), (100, 150, 200)),  // all up
+            ((100, 150, 200), (-10, 0, 5)),   // all down
+            ((27, 32, 751), (119, 177, 695)), // Pilot's custom step
+            ((0, 10, 20), (5, 10, 15)),       // narrow
+            ((5, 10, 15), (5, 10, 15)),       // no change
+        ];
+        for (cur, target) in cases {
+            let mut band = cur;
+            for cmd in isotherm_sequence(cur, target) {
+                let ThermalCmd::Isotherm(bound, v) = cmd else {
+                    panic!("not an isotherm write: {cmd:?}")
+                };
+                match bound {
+                    Isotherm::Lower => band.0 = v,
+                    Isotherm::Middle => band.1 = v,
+                    Isotherm::Upper => band.2 = v,
+                }
+                assert!(
+                    band.0 <= band.1 && band.1 <= band.2,
+                    "{cur:?}->{target:?}: {band:?}"
+                );
+            }
+            assert_eq!(band, target);
+        }
+        assert_eq!(isotherm_sequence((5, 10, 15), (5, 10, 15)).len(), 5);
+    }
+
+    #[test]
+    fn stale_report_and_partial_previous_band_do_not_break_ordering() {
+        let report = (0, 10, 20);
+        let first = isotherm_sequence(report, (100, 150, 200));
+        for sent in 0..=first.len() {
+            let mut actual = report;
+            for cmd in first[..sent]
+                .iter()
+                .copied()
+                .chain(isotherm_sequence(report, (5, 10, 15)))
+            {
+                match cmd {
+                    ThermalCmd::Isotherm(Isotherm::Lower, v) => actual.0 = v,
+                    ThermalCmd::Isotherm(Isotherm::Middle, v) => actual.1 = v,
+                    ThermalCmd::Isotherm(Isotherm::Upper, v) => actual.2 = v,
+                    _ => unreachable!(),
+                }
+                assert!(actual.0 <= actual.1 && actual.1 <= actual.2, "{actual:?}");
+            }
+            assert_eq!(actual, (5, 10, 15));
+        }
+    }
+
+    #[test]
+    fn thermal_queue_reserves_in_flight_capacity_and_retries_only_unsent() {
+        let mut c = Commands::default();
+        let mode = ThermalCmd::Mode(DisplayMode::Thermal);
+        c.thermal_pending = vec![mode; MAX_THERMAL_PENDING];
+        let batch = c.take_thermal();
+        assert!(!c.thermal_capacity(1));
+        c.thermal_sent();
+        assert!(c.thermal_capacity(1));
+        c.thermal_pending.push(ThermalCmd::Spot(0.5, 0.5));
+        c.retry_thermal(&batch[1..]);
+        assert_eq!(c.thermal_pending.len(), MAX_THERMAL_PENDING);
+        assert_eq!(c.thermal_pending.last(), Some(&ThermalCmd::Spot(0.5, 0.5)));
+        assert_eq!(c.thermal_in_flight, 0);
+        assert!(!c.thermal_capacity(1));
+    }
+
+    #[test]
+    fn queued_modes_coalesce_and_full_queue_rejects_without_mutation() {
+        let cmds: Shared = Arc::default();
+        for _ in 0..100 {
+            handle_t(r#"{"cmd":"thermal_mode","mode":3}"#, &cmds);
+            handle_t(r#"{"cmd":"thermal_mode","mode":0}"#, &cmds);
+        }
+        assert_eq!(pending(&cmds), [ThermalCmd::Mode(DisplayMode::Visual)]);
+        cmds.lock().unwrap().thermal_pending =
+            vec![ThermalCmd::Measure(Measure::Area); MAX_THERMAL_PENDING];
+        handle_t(r#"{"cmd":"thermal_mode","mode":3}"#, &cmds);
+        handle_t(r#"{"cmd":"spot","x":0.5,"y":0.5}"#, &cmds);
+        assert_eq!(pending(&cmds).len(), MAX_THERMAL_PENDING);
+    }
+
+    #[test]
+    fn isotherm_and_spot_commands_respect_the_camera_state() {
+        let cmds: Shared = Arc::default();
+        cmds.lock().unwrap().thermal_auto = true;
+        let r = spot_report((27, 32, 38));
+        handle(
+            r#"{"cmd":"isotherm","lower":30,"middle":20,"upper":40}"#,
+            &cmds,
+            Some(&r),
+        ); // out of order
+        handle(
+            r#"{"cmd":"isotherm","lower":20,"middle":30,"upper":40}"#,
+            &cmds,
+            None,
+        ); // no report yet
+        assert!(pending(&cmds).is_empty());
+        handle(
+            r#"{"cmd":"isotherm","lower":20,"middle":30,"upper":40}"#,
+            &cmds,
+            Some(&r),
+        );
+        assert_eq!(
+            pending(&cmds),
+            [
+                ThermalCmd::Isotherm(Isotherm::Lower, -40),
+                ThermalCmd::Isotherm(Isotherm::Upper, 800),
+                ThermalCmd::Isotherm(Isotherm::Middle, 30),
+                ThermalCmd::Isotherm(Isotherm::Lower, 20),
+                ThermalCmd::Isotherm(Isotherm::Upper, 40),
+            ]
+        );
+        assert!(!cmds.lock().unwrap().thermal_auto); // a manual band ends auto
+
+        // A spot while measuring an area switches to spot measurement first.
+        let cmds: Shared = Arc::default();
+        let area = Report {
+            measure: Measure::Area as u8,
+            ..r
+        };
+        handle(r#"{"cmd":"spot","x":0.5,"y":0.5}"#, &cmds, Some(&area));
+        assert_eq!(
+            pending(&cmds),
+            [
+                ThermalCmd::Measure(Measure::Spot),
+                ThermalCmd::Spot(0.5, 0.5)
+            ]
+        );
+        let cmds: Shared = Arc::default();
+        handle(r#"{"cmd":"spot","x":0.5,"y":0.5}"#, &cmds, Some(&r));
+        assert_eq!(pending(&cmds), [ThermalCmd::Spot(0.5, 0.5)]);
+    }
 
     #[test]
     fn linked_drives_only_the_master_and_queues_the_lock() {
@@ -220,7 +522,7 @@ mod tests {
     #[test]
     fn handle_parses_ui_messages() {
         let cmds: Shared = Arc::default();
-        handle(
+        handle_t(
             r#"{"cmd":"gimbal","camera":2,"pitch":5,"yaw":-3,"active":true}"#,
             &cmds,
         );
@@ -232,14 +534,33 @@ mod tests {
                 active: true
             }
         );
-        handle(r#"{"cmd":"stop"}"#, &cmds);
+        handle_t(r#"{"cmd":"stop"}"#, &cmds);
         assert!(!cmds.lock().unwrap().cam2.active);
-        handle(r#"{"cmd":"link","on":true}"#, &cmds);
+        handle_t(r#"{"cmd":"link","on":true}"#, &cmds);
         assert!(cmds.lock().unwrap().linked);
-        handle(r#"{"cmd":"reset","camera":2}"#, &cmds);
-        handle(r#"{"cmd":"reset","camera":7}"#, &cmds); // ignored
+        handle_t(r#"{"cmd":"reset","camera":2}"#, &cmds);
+        handle_t(r#"{"cmd":"reset","camera":7}"#, &cmds); // ignored
         assert_eq!(cmds.lock().unwrap().reset_pending, [Camera::One]); // linked
-        handle(r#"{"cmd":"gimbal","camera":9,"active":true}"#, &cmds); // ignored
-        handle("not json", &cmds); // logged, ignored
+        handle_t(r#"{"cmd":"gimbal","camera":9,"active":true}"#, &cmds); // ignored
+        handle_t("not json", &cmds); // logged, ignored
+    }
+
+    #[test]
+    fn thermal_commands_queue_in_order_with_only_the_latest_spot() {
+        let cmds: Shared = Arc::default();
+        handle_t(r#"{"cmd":"spot","x":0.1,"y":0.2}"#, &cmds);
+        handle_t(r#"{"cmd":"thermal_mode","mode":3}"#, &cmds);
+        handle_t(r#"{"cmd":"spot","x":0.5,"y":0.6}"#, &cmds); // replaces 0.1/0.2
+        handle_t(r#"{"cmd":"thermal_mode","mode":1}"#, &cmds); // unknown: ignored
+        handle_t(r#"{"cmd":"spot","x":"nan","y":0}"#, &cmds); // not a number: ignored
+        assert_eq!(
+            cmds.lock().unwrap().thermal_pending,
+            [
+                ThermalCmd::Mode(DisplayMode::Thermal),
+                // No report yet, so the spot is preceded by spot measurement.
+                ThermalCmd::Measure(Measure::Spot),
+                ThermalCmd::Spot(0.5, 0.6)
+            ]
+        );
     }
 }

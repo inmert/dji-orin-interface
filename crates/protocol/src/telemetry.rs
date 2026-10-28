@@ -14,6 +14,7 @@ use crate::duml::{DevName, Frame};
 use crate::flyc;
 use crate::gimbal;
 use crate::osdk::{self, broadcast};
+use crate::thermal;
 
 /// Count and last size of one distinct DUML stream (sender→receiver set/id).
 #[derive(Clone, Default, Debug)]
@@ -45,6 +46,8 @@ pub struct Telemetry {
     pub flight: FlightLink,
     /// DUML from the aircraft's USB API port (`ttyACM0`), also independent.
     pub usb: UsbLink,
+    /// Latest report from the thermal camera (spot meter, display mode).
+    pub thermal: Option<thermal::Report>,
 }
 
 /// The aircraft's USB API port (receive-only): the reports it pushes unasked.
@@ -128,6 +131,9 @@ impl Telemetry {
 
         if let Some(a) = gimbal::Attitude::decode(f) {
             self.gimbals.insert(a.index, a);
+        }
+        if let Some(r) = thermal::Report::decode(f) {
+            self.thermal = Some(r);
         }
     }
 }

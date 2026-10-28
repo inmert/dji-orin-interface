@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import SpotlightCard from "../components/SpotlightCard";
-import { Command, GimbalAttitude } from "../api";
+import { Command, GimbalAttitude, VideoStatus, ThermalReport } from "../api";
+import { VideoView } from "../components/VideoView";
+import { MODE_THERMAL, ThermalMarker, ThermalPanel, frameToThermal } from "./Thermal";
 
 // Camera N (UI) → gimbal device index (DUML). Camera 1 = index 0, camera 2 = 2.
 const CAMERA_INDEX: Record<number, number> = { 1: 0, 2: 2 };
@@ -17,6 +19,9 @@ export function GimbalPad({
   camera,
   stopGeneration = 0,
   attitude,
+  video,
+  thermal,
+  thermalAuto = false,
   linked,
   disabled,
   send,
@@ -24,11 +29,19 @@ export function GimbalPad({
   camera: number;
   stopGeneration?: number;
   attitude?: GimbalAttitude;
+  /** This camera's live video feed (`cam1` / `cam2` on the server). */
+  video?: VideoStatus;
+  /** The thermal camera's report, for the camera that carries it. */
+  thermal?: ThermalReport | null;
+  /** Whether the server's thermal auto range is on. */
+  thermalAuto?: boolean;
   linked: boolean;
   disabled: boolean;
   send: (c: Command) => void;
 }) {
   const [speed, setSpeed] = useState(200);
+  // Clicks measure temperature only while the thermal picture is shown.
+  const thermalView = thermal?.display_mode === MODE_THERMAL;
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const heldRef = useRef(false);
   const pointerRef = useRef<{
@@ -119,20 +132,30 @@ export function GimbalPad({
               : "Ready"}
         </span>
       </div>
-      <div className="video-placeholder">
-        <div className="viewport-label">
-          <span className="dot" /> CAMERA 0{camera}
-          <span>VIDEO UNAVAILABLE</span>
-        </div>
-        <div className="reticle" aria-hidden="true">
-          <span>+</span>
-        </div>
-        <div className="video-message">
-          <strong>Video feed not available</strong>
-          <span>Live video integration is in development</span>
-        </div>
-        <span className="viewport-corner">M210 / CAM 0{camera}</span>
-      </div>
+      <VideoView
+        feed={`cam${camera}`}
+        status={video}
+        label={`CAMERA 0${camera}`}
+        corner={`M210 / CAM 0${camera} · 640×360`}
+        aspect={16 / 9}
+        onPick={
+          thermalView && !disabled
+            ? (fx, fy) => {
+                const spot = frameToThermal(fx, fy);
+                if (spot) send({ cmd: "spot", x: spot[0], y: spot[1] });
+              }
+            : undefined
+        }
+      >
+        {thermalView && thermal ? (
+          <ThermalMarker thermal={thermal} />
+        ) : (
+          <div className="reticle" aria-hidden="true">
+            <span>+</span>
+          </div>
+        )}
+      </VideoView>
+      {thermal && <ThermalPanel thermal={thermal} auto={thermalAuto} disabled={disabled} send={send} />}
       <div className="camera-controls">
         <div className="direction-controls">
           <span className="control-label">GIMBAL JOYSTICK</span>
