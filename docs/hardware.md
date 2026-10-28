@@ -64,34 +64,34 @@ about four frames per second to `PC[0]`: gimbal attitude `0x04/0x05`
 `0x00/0x0e`. A read-only get-version (`0x00/0x01`, command type `0x40`) sent
 from **`PC[0]` (`0x0A`)** to the flight controller is acknowledged.
 
-### OSDK UART — receive only
+### OSDK UART — works through a USB-TTL adapter
 
 The Onboard SDK serial port is on the aircraft's expansion header, column 1
-from top to bottom: `SDK_Tx`, `SDK_Rx`, `GND` (3.3 V TTL). On the Orin it is the
-40-pin header: pin 8 TX (`/dev/ttyTHS1`, UARTA at `0x03100000`), pin 10 RX,
-pin 6 ground; aircraft TX goes to Orin RX and vice versa. 230400 baud, 8N1, no
+from top to bottom: `SDK_Tx`, `SDK_Rx`, `GND` (3.3 V TTL). 230400 baud, 8N1, no
 flow control. The wire format is OSDK OpenProtocol (SOF `0xAA`, CRC16 `0xA001`
 and CRC32 `0xEDB88320`, both seeded `0x3AA3`), not DUML.
 
-Aircraft-to-Orin works: a three-second capture contained 182 valid OSDK frames,
-all unsolicited broadcasts. The web server decodes that flight-data broadcast
-read-only (see [protocol.md](protocol.md#osdk-flight-data-broadcast-uart)). The flight controller never acknowledges anything
-sent to it, including the firmware-version query, so activation never starts.
-DJI's own OSDK 4.1 telemetry sample fails the same way ("Drone version not
-obtained"). Ruled out: API Control is on, the RC is on, the aircraft is out of
-PC mode, baud and config are correct, and nothing else holds the port.
+**Through a CP2102 USB-TTL adapter (`10c4:ea60`, `/dev/ttyUSB0`, 3.3 V logic) it
+works both ways (2026-10-28).** The flight controller acknowledged 29 of 30
+read-only firmware-version queries, replying with hardware ID `095XE9X00200W8`
+(the same ID it reports over USB DUML) and firmware
+`SDK-v1.1 BETA PM410-03.03.10.18`. Its flight-data broadcast decodes cleanly
+there too (256 frames in 5 s, none rejected), mixing flag words `0x00FF`,
+`0x2FFF`, `0x3000` and the zero-flag 267-byte layout. The web server reads it
+with `OSDK_UART=/dev/ttyUSB0`.
 
-An earlier pin 8/10 jumper loopback test failed, but a later measurement showed
-pin 8 dropping to about 0.5 V while sending and the signal reaching the
-aircraft's `SDK_Rx` pin, so the Orin's TX is good. The fault is on the aircraft
-side: either a damaged SDK-port input on the flight controller, or M210 V1
-firmware that OSDK 4.1 does not support (4.1 lists only the M210 V2; the V1 is
-listed by OSDK 3.8.1, and a 3.8.1 version probe also failed).
+**Through the Orin's own UART it only receives.** Wired directly to the 40-pin
+header (pin 8 TX = `/dev/ttyTHS1`, pin 10 RX, pin 6 ground), the broadcast
+arrives but the flight controller never acknowledges anything, including the
+version query. DJI's OSDK 4.1 telemetry sample failed the same way ("Drone
+version not obtained"). Since the aircraft answers the same query through the
+CP2102, the fault is on the Orin side of that path: the Orin's UART transmit,
+its pin configuration, or that wiring. Pin 8 was seen toggling while sending,
+and an earlier pin 8/10 jumper loopback test failed; the exact cause is not
+isolated. Use a 3.3 V USB-TTL adapter for the SDK port in the meantime.
 
-To rule the Orin out completely, test with a **3.3 V** USB-TTL adapter
-(enumerates as `/dev/ttyUSB0`): adapter TXD to `SDK_Rx`, RXD to `SDK_Tx`, GND to
-GND. Do **not** use a 5 V adapter such as the FTDI `TTL-232R-5V`; its TXD would
-drive 5 V into the aircraft's 3.3 V input.
+Do **not** use a 5 V adapter such as the FTDI `TTL-232R-5V`; its TXD would drive
+5 V into the aircraft's 3.3 V input. Leave an adapter's VCC pin unconnected.
 
 Diagnostic captures and the version-query script are in ignored
 `captures/osdk/uart-diagnostics/`. Private activation configuration lives

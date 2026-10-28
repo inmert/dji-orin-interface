@@ -42,9 +42,10 @@ of bulk endpoints.
 The aircraft can also be reached **directly, without the RC**: its USB API
 port (mode switch in the PC position) appears on the Orin as `/dev/ttyACM0` and
 carries the same DUML in both directions, with no SDK activation. Its OSDK UART
-only transmits; the aircraft never acknowledges commands on it, but its
-flight-data broadcast (attitude, altitude, velocity, GPS, battery, status) is
-decoded receive-only and shown in the web UI. See
+works both ways through a 3.3 V USB-TTL adapter (the flight controller answers
+version queries); through the Orin's own UART it only receives. Its flight-data
+broadcast (attitude, altitude, velocity, GPS, battery, status) is decoded
+receive-only and shown in the web UI. See
 [docs/hardware.md](docs/hardware.md#direct-aircraft-links-no-rc).
 
 See [docs/protocol.md](docs/protocol.md) for the DUML frame format and the AOA
@@ -291,7 +292,8 @@ to live video (see [docs/protocol.md](docs/protocol.md#fpv-camera-third-camera))
 - [x] Flight telemetry in the UI from the OSDK UART broadcast (receive-only, live-verified)
 - [x] Flight telemetry from the direct USB link (`ttyACM0`): attitude, mode, satellites, gimbal (live-verified)
 - [ ] Verify USB-link position/height/velocity offsets (needs a GPS fix and motion)
-- [ ] OSDK UART commands: aircraft never acks them
+- [x] OSDK UART two-way via a 3.3 V USB-TTL adapter: FC acks version queries
+- [ ] OSDK UART via the Orin's own pins: receive-only, cause on the Orin side not isolated
 - [x] Portal yaw-recenter buttons per camera and recenter-all (built and unit-tested;
       not yet pressed on the aircraft through the portal)
 - [x] Third (FPV) camera identified: `Camera[1]`, fixed mount `Gimbal[4]`; shown in the UI
