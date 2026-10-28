@@ -1,8 +1,7 @@
-/** Small, bounded jitter buffer for independently decodable JPEG frames.
- * Keep this outside React: neither network chunks nor animation ticks render UI.
+/** MJPEG playback onto a canvas, newest frame first: no jitter buffer, since
+ * every JPEG decodes on its own and the feed arrives intact. Keep this
+ * outside React: neither network chunks nor animation ticks render UI.
  */
-export const BUFFER_MS = 120;
-const MAX_FRAMES = 8;
 const MAX_JPEG = 2 * 1024 * 1024;
 const MAX_HEADER = 4096;
 
@@ -61,60 +60,46 @@ export class MultipartParser {
   }
 }
 
-interface Timed<T> { value: T; timestamp: number }
-
-/** Server monotonic time mapped to local time; no synchronized clocks needed. */
-export class PlayoutBuffer<T> {
-  private frames: Timed<T>[] = [];
-  private offset: number | undefined;
-  private latest: number | undefined;
+/** Holds only the newest decoded frame; an older one is released unseen. */
+export class LatestFrame<T> {
+  private value: T | undefined;
   constructor(private release: (value: T) => void) {}
 
-  push(value: T, timestamp: number, now: number) {
-    if (this.latest !== undefined && (timestamp < this.latest || timestamp - this.latest > 500)) {
-      this.clear(); // reconnect, source restart, or a stall: rebuffer at live edge
-    }
-    this.latest = timestamp;
-    this.offset = Math.min(this.offset ?? Infinity, now - timestamp);
-    this.frames.push({ value, timestamp });
-    while (this.frames.length > MAX_FRAMES) this.release(this.frames.shift()!.value);
+  push(value: T) {
+    if (this.value !== undefined) this.release(this.value);
+    this.value = value;
   }
 
-  take(now: number): T | undefined {
-    if (this.offset === undefined) return;
-    let selected: T | undefined;
-    while (this.frames.length && this.frames[0].timestamp + this.offset + BUFFER_MS <= now) {
-      if (selected !== undefined) this.release(selected);
-      selected = this.frames.shift()!.value;
-    }
-    return selected;
+  take(): T | undefined {
+    const value = this.value;
+    this.value = undefined;
+    return value;
   }
 
   clear() {
-    for (const frame of this.frames) this.release(frame.value);
-    this.frames = [];
-    this.offset = undefined;
-    this.latest = undefined;
+    if (this.value !== undefined) this.release(this.value);
+    this.value = undefined;
   }
 }
 
-export type PlaybackState = "buffering" | "playing" | "reconnecting";
+export type PlaybackState = "waiting" | "playing" | "reconnecting";
 
-/** One connection, one decode in flight, bounded queues, automatic recovery. */
+/** One connection, one decode in flight, newest frame only, automatic recovery. */
 export function playMjpeg(canvas: HTMLCanvasElement, url: string,
   onState: (state: PlaybackState) => void): () => void {
   const ctx = canvas.getContext("2d", { alpha: false });
   if (!ctx) throw new Error("Canvas playback is unavailable");
   const controller = new AbortController();
-  const playout = new PlayoutBuffer<ImageBitmap>(bitmap => bitmap.close());
-  let pending: EncodedFrame[] = [];
+  const latest = new LatestFrame<ImageBitmap>(bitmap => bitmap.close());
+  // The newest JPEG not yet decoded; one that is overtaken is never decoded.
+  let pending: EncodedFrame | undefined;
   let decoding = false;
   let stopped = false;
   let generation = 0;
   let raf = 0;
   let retry: number | undefined;
   let lastDraw = performance.now();
-  let state: PlaybackState = "buffering";
+  let state: PlaybackState = "waiting";
   const update = (next: PlaybackState) => {
     if (state !== next) { state = next; onState(next); }
   };
@@ -123,13 +108,14 @@ export function playMjpeg(canvas: HTMLCanvasElement, url: string,
     if (decoding || stopped) return;
     decoding = true;
     try {
-      while (pending.length && !stopped) {
-        const frame = pending.shift()!;
+      while (pending && !stopped) {
+        const frame = pending;
+        pending = undefined;
         const current = generation;
         try {
           const bitmap = await createImageBitmap(new Blob([frame.bytes], { type: "image/jpeg" }));
           if (stopped || current !== generation) bitmap.close();
-          else playout.push(bitmap, frame.timestamp, performance.now());
+          else latest.push(bitmap);
         } catch { /* A corrupt JPEG must not terminate the feed. */ }
       }
     } finally { decoding = false; }
@@ -137,7 +123,7 @@ export function playMjpeg(canvas: HTMLCanvasElement, url: string,
 
   const render = (now: number) => {
     if (stopped) return;
-    const bitmap = playout.take(now);
+    const bitmap = latest.take();
     if (bitmap) {
       if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
         canvas.width = bitmap.width; canvas.height = bitmap.height;
@@ -146,7 +132,7 @@ export function playMjpeg(canvas: HTMLCanvasElement, url: string,
       bitmap.close();
       lastDraw = now;
       update("playing");
-    } else if (now - lastDraw > 1000 && state === "playing") update("buffering");
+    } else if (now - lastDraw > 1000 && state === "playing") update("waiting");
     raf = requestAnimationFrame(render);
   };
 
@@ -161,9 +147,7 @@ export function playMjpeg(canvas: HTMLCanvasElement, url: string,
         const { value, done } = await reader.read();
         if (done || stopped) break;
         parser.push(value, performance.now(), frame => {
-          pending.push(frame);
-          // Drop only complete JPEGs. Never discard compressed H.264 payloads.
-          if (pending.length > MAX_FRAMES) pending.shift();
+          pending = frame;
         });
         void decode();
       }
@@ -172,8 +156,8 @@ export function playMjpeg(canvas: HTMLCanvasElement, url: string,
       await reader?.cancel().catch(() => {});
       reader?.releaseLock();
       generation++;
-      pending = [];
-      playout.clear();
+      pending = undefined;
+      latest.clear();
       if (!stopped) {
         update("reconnecting");
         retry = window.setTimeout(() => void connect(), 1000);
@@ -189,7 +173,7 @@ export function playMjpeg(canvas: HTMLCanvasElement, url: string,
     controller.abort();
     clearTimeout(retry);
     cancelAnimationFrame(raf);
-    pending = [];
-    playout.clear();
+    pending = undefined;
+    latest.clear();
   };
 }

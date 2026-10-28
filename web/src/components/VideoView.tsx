@@ -52,7 +52,7 @@ export function VideoView({
 }) {
   const [on, setOn] = useState(() => started.has(feed));
   const canvas = useRef<HTMLCanvasElement>(null);
-  const [playback, setPlayback] = useState<PlaybackState>("buffering");
+  const [playback, setPlayback] = useState<PlaybackState>("waiting");
   const [visible, setVisible] = useState(!document.hidden);
   useEffect(() => {
     const visibility = () => setVisible(!document.hidden);
@@ -61,7 +61,7 @@ export function VideoView({
   }, []);
   useEffect(() => {
     if (!on || !visible || !canvas.current) return;
-    setPlayback("buffering");
+    setPlayback("waiting");
     return playMjpeg(canvas.current, videoUrl(feed), setPlayback);
   }, [feed, on, visible]);
   const live = on && visible && playback === "playing";
@@ -89,7 +89,7 @@ export function VideoView({
       {children}
       {!live && (
         <div className="video-message">
-          <strong>{on ? (playback === "reconnecting" ? "Reconnecting" : "Buffering") : "Video is off"}</strong>
+          <strong>{on ? (playback === "reconnecting" ? "Reconnecting" : "Waiting for video") : "Video is off"}</strong>
           <span>{on ? message : "Decoding starts when you start the video"}</span>
         </div>
       )}

@@ -15,14 +15,14 @@
 //! the last one leaves. Decoding runs in a `gst-launch-1.0` child on NVIDIA's
 //! `nvv4l2decoder` ([`Decoder`]). The cameras use intra refresh (few or no IDR
 //! frames), which that decoder only accepts with `is-gdr-stream=true`. JPEG
-//! frames travel over HTTP with monotonic timestamps for bounded browser playout.
+//! frames travel over HTTP; each viewer gets the newest frame, never a backlog.
 //!
 //! ```text
 //!   UDT / RC channel ─▶ pump ─▶ NalFilter ─stdin─▶ gst (NVDEC → JPEG) ─fd 3─▶ splitter ─▶ viewers
 //!                                                      └─stdout/stderr─▶ diagnostics (logged, never video)
 //! ```
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::SocketAddrV4;
 use std::os::fd::OwnedFd;
@@ -54,8 +54,6 @@ const RC_QUEUE: usize = 512;
 /// Diagnostic lines from the decoder logged per run; the rest are counted.
 /// NVIDIA's GDR mode prints a "Frame N" line for every frame.
 const DIAG_LOG_LINES: usize = 8;
-/// Preserve short delivery bursts, but never accumulate a slow viewer's backlog.
-const FRAME_HISTORY: usize = 8;
 /// Reject malformed units before they can consume unbounded memory/CPU.
 const MAX_NAL: usize = 2 * 1024 * 1024;
 
@@ -105,7 +103,8 @@ pub struct VideoStatus {
 struct Inner {
     status: VideoStatus,
     running: bool,
-    frames: VecDeque<Arc<Frame>>,
+    /// The newest decoded frame.
+    latest: Option<Arc<Frame>>,
 }
 
 /// One video feed: viewers subscribe, one worker decodes for them.
@@ -139,7 +138,7 @@ impl Feed {
                     error: None,
                 },
                 running: false,
-                frames: VecDeque::new(),
+                latest: None,
             }),
             new_frame: Condvar::new(),
             rc_tx: Mutex::new(None),
@@ -206,14 +205,11 @@ impl Feed {
         let mut inner = self.lock();
         inner.status.frames += 1;
         let sequence = inner.status.frames;
-        inner.frames.push_back(Arc::new(Frame {
+        inner.latest = Some(Arc::new(Frame {
             jpeg,
             sequence,
             timestamp_ms: self.epoch.elapsed().as_millis() as u64,
         }));
-        while inner.frames.len() > FRAME_HISTORY {
-            inner.frames.pop_front();
-        }
         inner.status.state = "streaming";
         inner.status.error = None;
         drop(inner);
@@ -479,8 +475,9 @@ pub struct Viewer {
 }
 
 impl Viewer {
-    /// The next frame newer than the last one returned, or `None` if none
-    /// arrives within `timeout`.
+    /// The newest frame, once it is newer than the last one returned (frames
+    /// published in between are skipped), or `None` if none arrives within
+    /// `timeout`.
     pub fn next_frame(&mut self, timeout: Duration) -> Option<Arc<Frame>> {
         let inner = self.feed.lock();
         let (inner, _) = self
@@ -491,11 +488,7 @@ impl Viewer {
         if inner.status.frames == self.seen {
             return None;
         }
-        let frame = inner
-            .frames
-            .iter()
-            .find(|f| f.sequence > self.seen)?
-            .clone();
+        let frame = inner.latest.clone()?;
         self.seen = frame.sequence;
         Some(frame)
     }
@@ -678,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn viewer_preserves_short_bursts_but_bounds_backlog() {
+    fn viewer_gets_the_newest_frame_and_never_a_backlog() {
         let feed = Feed::new("test", Source::Rc(0), None);
         // Construct a viewer without starting a worker or opening any device.
         feed.lock().status.viewers = 1;
@@ -686,18 +679,20 @@ mod tests {
             feed: Arc::clone(&feed),
             seen: 0,
         };
-        for n in 0..3 {
-            feed.publish(vec![n]);
-        }
-        for n in 0..3 {
-            assert_eq!(viewer.next_frame(Duration::ZERO).unwrap().jpeg, vec![n]);
-        }
         assert!(viewer.next_frame(Duration::ZERO).is_none());
-        for n in 3..20 {
+        feed.publish(vec![0]);
+        assert_eq!(viewer.next_frame(Duration::ZERO).unwrap().jpeg, vec![0]);
+        assert!(
+            viewer.next_frame(Duration::ZERO).is_none(),
+            "each frame sent once"
+        );
+        for n in 1..20 {
             feed.publish(vec![n]);
         }
-        assert_eq!(feed.lock().frames.len(), FRAME_HISTORY);
-        assert_eq!(viewer.next_frame(Duration::ZERO).unwrap().jpeg, vec![12]);
+        // A slow viewer skips straight to the newest frame.
+        let frame = viewer.next_frame(Duration::ZERO).unwrap();
+        assert_eq!((frame.jpeg.clone(), frame.sequence), (vec![19], 20));
+        assert!(viewer.next_frame(Duration::ZERO).is_none());
         assert_eq!(feed.status().state, "streaming");
     }
 
@@ -720,12 +715,7 @@ mod tests {
         let _ = gst.child.wait();
         drop(gst);
         let frames = feed.status().frames;
-        let frame = feed
-            .lock()
-            .frames
-            .back()
-            .cloned()
-            .expect("at least one frame");
+        let frame = feed.lock().latest.clone().expect("at least one frame");
         let jpeg = &frame.jpeg;
         println!("{path}: {frames} JPEG frames, last {} bytes", jpeg.len());
         assert!(frames > 0);
