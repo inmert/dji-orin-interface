@@ -1,7 +1,8 @@
 //! Split a raw RC→app USB capture (e.g. from the server's `RC_DUMP`) into one
 //! file per mux channel, offline: `<out_prefix>-<channel>.bin`. The video
 //! channels are plain H.264 byte streams, playable with e.g.
-//! `gst-play-1.0` or `ffplay -f h264`.
+//! `gst-play-1.0` or `ffplay -f h264`. `-40` and `-49` are the two DUML
+//! streams (the mux's DUML channel and the DUML sent outside the mux).
 //!
 //! Usage: `cargo run -p dji-protocol --example rcmux_split -- <ep1.bin> <out_prefix>`
 

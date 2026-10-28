@@ -63,11 +63,13 @@ impl Dump {
 /// gadget, e.g. it was power-cycled) is waited out, so the reader resumes on
 /// the next ENABLE without being respawned.
 ///
-/// The DUML decoder scans the raw bytes (it skips the mux headers and video by
-/// CRC), so telemetry does not depend on the mux layout; `feeds` get the
-/// payloads of their RC channels.
+/// [`rcmux`] splits the stream: DUML arrives on two separate byte streams
+/// (the mux's DUML channel, and outer frames sent outside the mux), each with
+/// its own decoder so a frame split across packets is reassembled; `feeds`
+/// get the payloads of their RC channels.
 pub fn run(ep1: OwnedFd, tele: Tele, feeds: Vec<Arc<Feed>>) {
-    let mut decoder = duml::Decoder::new();
+    // One decoder per DUML byte stream: [mux channel, direct].
+    let mut decoders = [duml::Decoder::new(), duml::Decoder::new()];
     let mut demux = rcmux::Demux::new();
     let mut buf = vec![0u8; 16384];
     let mut dump = Dump::from_env();
@@ -78,16 +80,17 @@ pub fn run(ep1: OwnedFd, tele: Tele, feeds: Vec<Arc<Feed>>) {
                 if dump.as_mut().is_some_and(|d| !d.write(&buf[..n])) {
                     dump = None;
                 }
-                if !feeds.is_empty() {
-                    demux.push(&buf[..n], |ch, payload| {
+                demux.push(&buf[..n], |ch, payload| match ch {
+                    rcmux::DUML => decoders[0].push(payload),
+                    rcmux::DUML_DIRECT => decoders[1].push(payload),
+                    _ => {
                         if let Some(f) = feeds.iter().find(|f| f.rc_channel() == Some(ch)) {
                             f.offer(payload);
                         }
-                    });
-                }
-                decoder.push(&buf[..n]);
+                    }
+                });
                 let mut t = tele.lock().unwrap();
-                decoder.drain(|f| {
+                let mut each = |f: &duml::Frame| {
                     if f.crc_ok {
                         t.update(f);
                         if let Some((seq, status)) = thermal::ack(f) {
@@ -99,7 +102,10 @@ pub fn run(ep1: OwnedFd, tele: Tele, feeds: Vec<Arc<Feed>>) {
                             }
                         }
                     }
-                });
+                };
+                for d in &mut decoders {
+                    d.drain(&mut each);
+                }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => {}
             Err(e) => {
@@ -110,7 +116,7 @@ pub fn run(ep1: OwnedFd, tele: Tele, feeds: Vec<Arc<Feed>>) {
                 }
                 if code == usb::errno::ESHUTDOWN {
                     // Any partial frame belongs to the old session.
-                    decoder = duml::Decoder::new();
+                    decoders = [duml::Decoder::new(), duml::Decoder::new()];
                     demux = rcmux::Demux::new();
                 }
                 sleep(Duration::from_millis(20));

@@ -444,16 +444,40 @@ or `openh264dec`.
 ## RC USB mux and camera video
 
 What the RC sends the app on its bulk stream (ep1 on our gadget) is not
-encrypted: it is a simple packet mux of DUML and three plain H.264 streams
-(found 2026-10-28 from a raw capture, `RC_DUMP=<file>` on the server). Each
-packet is a 12-byte header, `len` payload bytes, then zero padding to a
-multiple of 8 bytes:
+encrypted: it is a two-layer mux of DUML and three plain H.264 streams
+(found 2026-10-28 from a raw capture, `RC_DUMP=<file>` on the server).
+
+**Outer frames.** The whole stream is a chain of frames with an 8-byte header
+and no padding. In a 460 MB capture they cover every byte with no resync:
+
+```text
+  55 cc | type | 57 | len (u16 LE) | 00 00 | payload…
+```
+
+| Type | Payload |
+|------|---------|
+| `0x4a` | a slice of the mux stream below (2–8192 bytes); a mux packet may span several |
+| `0x49` | DUML frames directly (~1 KB, a few per second) |
+
+Most camera traffic travels in type `0x49`: all of the thermal core's `0xF2`
+reports and the ACKs, none of which appear on mux channel `0x40`. The two
+are separate byte streams, so each needs its own DUML decoder. Scanning the
+raw bytes instead loses frames that an outer header splits (several thousand
+in the capture: flight-controller, gimbal and camera reports) and accepts
+noise from the video as DUML.
+
+**Mux packets.** The concatenated type-`0x4a` payloads are packets of a
+12-byte header, `len` payload bytes, then zero padding to a multiple of 8
+bytes:
 
 ```text
   00 00 01 ff | len (u16 LE) | ff 00 4c | channel | check | 00 | payload…
 ```
 
-`check` is the XOR of the ten header bytes before it. Channels:
+`check` is the XOR of the ten header bytes before it. After some packets
+the RC adds a bare 8-byte H.264 access-unit delimiter
+(`00 00 00 00 00 01 09 10`) outside any packet; the demuxer skips it, and it
+carries no picture. Channels:
 
 | Channel | Content |
 |---------|---------|
@@ -464,10 +488,12 @@ multiple of 8 bytes:
 
 The channel ↔ camera mapping was confirmed by picture through the bridge with
 DJI Pilot running. Pilot (v2.5.1.17 on the CrystalSky) decodes both with
-Android MediaCodec on the tablet's hardware decoder. The RC occasionally puts
-stray bytes inside a video packet (e.g. a NAL unit starting `00 00 01 a7`, with
-the forbidden bit set). The server drops such NAL units before decoding, or the
-parser takes them for a bogus SPS and the decoder stops.
+Android MediaCodec on the tablet's hardware decoder. An earlier demuxer that
+ignored the outer frames spliced their 8-byte headers into the ~5% of video
+packets that span two outer frames (about 6,700 in 150 MB), producing NAL
+units with the forbidden bit set (e.g. starting `00 00 01 a7`) that the parser
+took for a bogus SPS, stopping the decoder. With both layers parsed there are
+none; the server still drops such NAL units, as a guard against lost data.
 
 The cameras use intra refresh with few or no IDR frames. On the Orin, NVIDIA's
 `nvv4l2decoder` decodes them only with `is-gdr-stream=true`; without it every

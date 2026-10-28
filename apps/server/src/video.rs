@@ -508,10 +508,12 @@ impl Drop for Viewer {
 }
 
 /// Passes an H.264 Annex B byte stream through whole NAL units at a time,
-/// dropping any unit whose forbidden bit is set. The RC occasionally puts
-/// stray bytes in a video packet; one that looks like `00 00 01 a7…` would
-/// otherwise reach the parser as a bogus SPS and kill the decoder. A unit is
-/// released when the next start code arrives (about one frame of delay).
+/// dropping any unit whose forbidden bit is set. Such units came from the
+/// RC demuxer splicing outer-frame headers into video packets (fixed in
+/// [`dji_protocol::rcmux`]); one that looked like `00 00 01 a7…` reached the
+/// parser as a bogus SPS and killed the decoder. Kept as a guard against
+/// lost or damaged USB data. A unit is released when the next start code
+/// arrives (about one frame of delay).
 #[derive(Default)]
 struct NalFilter {
     buf: Vec<u8>,
