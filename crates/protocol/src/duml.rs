@@ -39,8 +39,9 @@ pub enum Device {
     WiFi = 0x07,
     Dm36x = 0x08,
     HdLink = 0x09,
-    Battery = 0x0A,
-    Esc = 0x0B,
+    Pc = 0x0A,
+    Battery = 0x0B,
+    Esc = 0x0C,
 }
 
 impl Device {
@@ -50,7 +51,7 @@ impl Device {
     }
 }
 
-const DEVICE_NAMES: [&str; 12] = [
+const DEVICE_NAMES: [&str; 13] = [
     "Any",
     "Camera",
     "App",
@@ -61,6 +62,7 @@ const DEVICE_NAMES: [&str; 12] = [
     "WiFi",
     "DM36x",
     "HDLink",
+    "PC",
     "Battery",
     "ESC",
 ];
@@ -82,8 +84,9 @@ impl TryFrom<u8> for Device {
             0x07 => Device::WiFi,
             0x08 => Device::Dm36x,
             0x09 => Device::HdLink,
-            0x0A => Device::Battery,
-            0x0B => Device::Esc,
+            0x0A => Device::Pc,
+            0x0B => Device::Battery,
+            0x0C => Device::Esc,
             other => return Err(other),
         })
     }
@@ -487,5 +490,9 @@ mod tests {
     fn device_try_from_round_trips() {
         assert_eq!(Device::try_from(0x43), Ok(Device::FlightCtrl)); // index bits ignored
         assert_eq!(Device::try_from(0x1F), Err(0x1F));
+        // 0x0A is the PC on the aircraft's USB API port (the FC acks it there).
+        assert_eq!(Device::try_from(0x0A), Ok(Device::Pc));
+        assert_eq!(Device::try_from(0x0C), Ok(Device::Esc));
+        assert_eq!(DevName(0x0A).to_string(), "PC[0]");
     }
 }

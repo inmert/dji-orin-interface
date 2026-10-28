@@ -98,8 +98,9 @@ A frame captured from DJI Pilot:
 | 0x07| WiFi           |
 | 0x08| DM36x video    |
 | 0x09| HD link        |
-| 0x0a| Battery        |
-| 0x0b| ESC            |
+| 0x0a| PC (USB API port / ttyACM0) |
+| 0x0b| Battery        |
+| 0x0c| ESC            |
 
 Higher types seen in captures (e.g. `0x0e`, `0x1f`) are not all identified.
 

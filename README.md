@@ -39,6 +39,12 @@ of bulk endpoints.
  └──────────┘                               └──────────────┘
 ```
 
+The aircraft can also be reached **directly, without the RC**: its USB API
+port (mode switch in the PC position) appears on the Orin as `/dev/ttyACM0` and
+carries the same DUML in both directions, with no SDK activation. Its OSDK UART
+only transmits; the aircraft never acknowledges commands on it. See
+[docs/hardware.md](docs/hardware.md#direct-aircraft-links-no-rc).
+
 See [docs/protocol.md](docs/protocol.md) for the DUML frame format and the AOA
 handshake, and [docs/hardware.md](docs/hardware.md) for the USB topology and
 the specific interfaces each device exposes.
@@ -241,6 +247,9 @@ DJI's encrypted/encoded stream, so the UI shows a placeholder for now.
 - [x] Camera LINK — native dual-gimbal lock (both move together), hardware-verified
 - [x] Native yaw reset decoded and hardware-verified: each camera independently,
       both via the master when linked; pitch is preserved
+- [x] Direct USB link to the aircraft (`/dev/ttyACM0`, DUML both ways, no RC)
+- [ ] Decode flight telemetry (attitude, GPS, battery, status) on the direct link
+- [ ] OSDK UART: aircraft never acks commands (receive-only so far)
 - [ ] Portal reset buttons per camera and reset-all (protocol builder ready)
 - [ ] Live camera video in the UI (encrypted downlink — research spike)
 - [ ] Send/inject flight commands to the aircraft

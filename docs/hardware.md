@@ -40,43 +40,61 @@ so USB sniffing uses the gadget/host programs themselves, not `usbmon`.
 
 The CrystalSky plugs into a Orin **USB-A** port. By default it enumerates as a
 DJI device (`2ca3:4016`) in Android PC mode: mass storage + ADB + a CDC-ACM
-serial (`/dev/ttyACM0`, idle). `aoa_capture` runs the AOA host handshake toward
+serial (`/dev/ttyACM*`, idle). `aoa_capture` runs the AOA host handshake toward
 it; the CrystalSky then re-enumerates as `18d1:2d01` and DJI Pilot streams DUML.
 
-## Direct aircraft UART diagnosis (2026-10-27)
+## Direct aircraft links (no RC)
 
-The aircraft OSDK UART is being investigated separately from the USB tablet
-bridge. Physical header pin 8 is TX (`/dev/ttyTHS1`, UARTA at `0x03100000`),
-pin 10 is RX, and pin 6 is ground. Aircraft RX connects to Orin TX and vice
-versa. The configured baud rate is 230400, 8N1, without flow control.
+The aircraft can also be wired straight to the Orin, bypassing the RC. Anything
+sent on these links reaches the real flight controller, so the same props-off
+rule applies to everything beyond read-only queries.
 
-Aircraft-to-Orin reception works: a three-second capture contained 182 valid
-OSDK frames (SOF `AA`, header CRC16 and frame CRC32 verified), all broadcasts.
-Firmware-version queries received no matching ACK, including writes split
-into single bytes to exercise the serial driver's short-write PIO path.
-Activation has therefore not been verified. OSDK 4.1 targets newer aircraft;
-the M210 V1 is listed by OSDK 3.8.1. An earlier 3.8.1 version probe also failed.
+### USB API port — working
 
-With the aircraft TX/RX disconnected and the user reporting a jumper between
-pins 8 and 10, local loopback failed at both 230400 and 115200 baud, with both
-full-buffer and single-byte writes. This failure occurs independently of DJI
-credentials, API-control settings, or the OSDK handshake.
+With the aircraft's USB mode switch in the **left (PC)** position and the
+aircraft's USB port cabled to an Orin USB-A port, the aircraft enumerates as
+`2ca3:001f` with RNDIS (the Orin gets `192.168.42.3`), mass storage, a vendor
+bulk interface (no driver), and a CDC-ACM serial port, **`/dev/ttyACM0`**. (If
+the CrystalSky is also plugged in, it takes the next ACM number.)
 
-The UART pad settings were TX `0x024300a8=0x400`, RX
-`0x024300a0=0x458`, consistent with UART SFIO/output and SFIO/input respectively.
-Temporarily clearing the TX GPIO output-float bit did not restore loopback.
-A separate temporary GPIO test drove TX high/low while reading RX: the TX
-output latch changed, but RX remained low on all five samples. All modified
-registers were restored and read back successfully. Register readback does
-not prove that the physical TX pad changed voltage.
+`ttyACM0` carries **DUML** (same framing and checksums as the RC link) in both
+directions, with no OSDK activation or credentials. At idle the aircraft pushes
+about four frames per second to `PC[0]`: gimbal attitude `0x04/0x05`
+(2 Hz), flight controller `0x03/0x43` (1 Hz), `0x11/0x01`, and `Gimbal[7]`
+`0x00/0x0e`. A read-only get-version (`0x00/0x01`, command type `0x40`) sent
+from **`PC[0]` (`0x0A`)** to the flight controller is acknowledged.
 
-The remaining fault is not isolated: jumper contact/pin placement, the header
-electrical path, and low-level pad/controller behavior remain candidates.
-Measure physical pin 8 against ground or test with an independently verified
-3.3 V TTL adapter before making persistent pinmux/boot changes. Diagnostic
-captures and the version-query script are in ignored
-`captures/osdk/uart-diagnostics/`; private activation configuration is also
-under ignored `captures/osdk/` and must not be committed.
+### OSDK UART — receive only
+
+The Onboard SDK serial port is on the aircraft's expansion header, column 1
+from top to bottom: `SDK_Tx`, `SDK_Rx`, `GND` (3.3 V TTL). On the Orin it is the
+40-pin header: pin 8 TX (`/dev/ttyTHS1`, UARTA at `0x03100000`), pin 10 RX,
+pin 6 ground; aircraft TX goes to Orin RX and vice versa. 230400 baud, 8N1, no
+flow control. The wire format is OSDK OpenProtocol (SOF `0xAA`, CRC16 `0xA001`
+and CRC32 `0xEDB88320`, both seeded `0x3AA3`), not DUML.
+
+Aircraft-to-Orin works: a three-second capture contained 182 valid OSDK frames,
+all unsolicited broadcasts. The flight controller never acknowledges anything
+sent to it, including the firmware-version query, so activation never starts.
+DJI's own OSDK 4.1 telemetry sample fails the same way ("Drone version not
+obtained"). Ruled out: API Control is on, the RC is on, the aircraft is out of
+PC mode, baud and config are correct, and nothing else holds the port.
+
+An earlier pin 8/10 jumper loopback test failed, but a later measurement showed
+pin 8 dropping to about 0.5 V while sending and the signal reaching the
+aircraft's `SDK_Rx` pin, so the Orin's TX is good. The fault is on the aircraft
+side: either a damaged SDK-port input on the flight controller, or M210 V1
+firmware that OSDK 4.1 does not support (4.1 lists only the M210 V2; the V1 is
+listed by OSDK 3.8.1, and a 3.8.1 version probe also failed).
+
+To rule the Orin out completely, test with a **3.3 V** USB-TTL adapter
+(enumerates as `/dev/ttyUSB0`): adapter TXD to `SDK_Rx`, RXD to `SDK_Tx`, GND to
+GND. Do **not** use a 5 V adapter such as the FTDI `TTL-232R-5V`; its TXD would
+drive 5 V into the aircraft's 3.3 V input.
+
+Diagnostic captures and the version-query script are in ignored
+`captures/osdk/uart-diagnostics/`. Private activation configuration lives
+outside the repo and must not be committed.
 
 ## Other interfaces on the Orin
 
