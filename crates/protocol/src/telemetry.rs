@@ -1,5 +1,6 @@
 //! Telemetry: a serializable snapshot built from the DUML the aircraft streams
-//! up through the controller, broadcast to the web UI over WebSocket.
+//! up through the controller, plus the flight-data broadcast from its OSDK
+//! UART ([`FlightLink`]), broadcast to the web UI over WebSocket.
 //!
 //! Field decoding is deliberately conservative. The stream/activity table is
 //! exact (it only reports what frames arrived); per-feature decodes live with
@@ -10,6 +11,7 @@ use std::collections::BTreeMap;
 
 use crate::duml::{DevName, Frame};
 use crate::gimbal;
+use crate::osdk::{self, broadcast};
 
 /// Count and last size of one distinct DUML stream (sender→receiver set/id).
 #[derive(Clone, Default, Debug)]
@@ -37,6 +39,37 @@ pub struct Telemetry {
     /// Distinct streams seen, keyed `set/id sender>receiver` (hex), with
     /// running counts.
     pub streams: BTreeMap<String, StreamStat>,
+    /// Flight data from the OSDK UART, independent of the DUML link above.
+    pub flight: FlightLink,
+}
+
+/// The aircraft's OSDK UART flight-data broadcast (receive-only).
+#[derive(Clone, Default, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct FlightLink {
+    /// Serial port being read; empty when the reader is disabled.
+    pub port: String,
+    /// The port is open and being read.
+    pub open: bool,
+    /// Broadcast frames decoded.
+    pub frames: u64,
+    /// Broadcast frames that matched no known layout, or were encrypted.
+    pub rejected: u64,
+    pub data: broadcast::FlightData,
+}
+
+impl FlightLink {
+    /// Fold one CRC-valid OpenProtocol frame in; other commands are ignored.
+    pub fn update(&mut self, f: &osdk::Frame) {
+        if (f.cmd_set, f.cmd_id) != (broadcast::CMD_SET, broadcast::CMD_ID) {
+            return;
+        }
+        if f.enc == 0 && self.data.apply(f.payload).is_ok() {
+            self.frames += 1;
+        } else {
+            self.rejected += 1;
+        }
+    }
 }
 
 impl Telemetry {
@@ -112,6 +145,29 @@ mod tests {
         assert_eq!(t.frames, 2);
         let attitude = &t.gimbals[&2];
         assert_eq!((attitude.pitch, attitude.roll, attitude.yaw), (10, 0, -20));
+    }
+
+    #[test]
+    fn flight_link_counts_broadcasts_and_rejects() {
+        let mut l = FlightLink::default();
+        let mut time_only = vec![1, 0];
+        time_only.extend_from_slice(&42u32.to_le_bytes());
+        time_only.extend_from_slice(&[0; 11]);
+        let frame = |set, payload, enc| osdk::Frame {
+            session: 0,
+            ack: false,
+            enc,
+            seq: 0,
+            cmd_set: set,
+            cmd_id: 0,
+            payload,
+        };
+        l.update(&frame(broadcast::CMD_SET, &time_only, 0));
+        l.update(&frame(broadcast::CMD_SET, &time_only, 1)); // encrypted
+        l.update(&frame(broadcast::CMD_SET, &time_only[..5], 0)); // bad layout
+        l.update(&frame(0x00, &time_only, 0)); // not a broadcast
+        assert_eq!((l.frames, l.rejected), (1, 2));
+        assert_eq!(l.data.time_ms, Some(42));
     }
 
     #[test]

@@ -309,6 +309,44 @@ cmd_id=0x06 len=5` is just a periodic status push.) Built in
 [`src/gimbal/command.rs`](../crates/protocol/src/gimbal/command.rs) (`lock_frame`) and used by the web
 server's LINK toggle.
 
+## OSDK flight-data broadcast (UART)
+
+The aircraft's OSDK UART speaks DJI's Onboard SDK **OpenProtocol**, not DUML:
+SOF `0xAA`, a 12-byte header (10-bit length, session/ack bits, encryption bits,
+sequence) with a CRC-16 (poly `0xA001`), then command set/id, payload and a
+CRC-32 (poly `0xEDB88320`); both CRCs are seeded `0x3AA3`. The flight
+controller pushes `cmd_set 0x02 / cmd_id 0x00` unasked, with no activation.
+Its payload is a `u16` flag word and then each flagged section in a fixed
+order (packed little-endian, from the SDK's `DataBroadcast::unpackData`):
+
+| flag | section | bytes |
+|------|---------|-------|
+| `0x0001` | FC time (ms, ns) + sync stamp | 15 |
+| `0x0002` | attitude quaternion (w, x, y, z) | 16 |
+| `0x0004` | acceleration | 12 |
+| `0x0008` | velocity (m/s) + GPS-health bit | 13 |
+| `0x0010` | angular rate | 12 |
+| `0x0020` | position (lat/lon rad, baro altitude, height, health) + obstacle distances | 50 |
+| `0x0040` | GPS (date, time, lat/lon deg·1e7, MSL height mm, NED velocity cm/s, DOP, satellites) | 68 |
+| `0x0080` | RTK | 44 |
+| `0x0100` | magnetometer | 6 |
+| `0x0200` | RC sticks (±10000) | 12 |
+| `0x0400` | gimbal roll/pitch/yaw (deg) | 13 |
+| `0x0800` | status: flight state, flight mode, landing gear, error | 4 |
+| `0x1000` | battery (mAh, mV, mA, %) | 13 |
+| `0x2000` | SDK control info | 2 |
+| `0x4000` | compass status | 1 |
+
+Observed on our M210 V1: one session sent a time-only frame (~50 Hz) plus a
+267-byte frame whose flag word read `0` but whose body was exactly sections
+`0x0001`–`0x0800`. Another session used real flag words, `0x00FF` and `0x2FFF`.
+The decoder ([`osdk/broadcast.rs`](../crates/protocol/src/osdk/broadcast.rs))
+trusts a non-zero flag word only if the section sizes add up to the body length,
+resolves a zero word by matching the length against the section order, and
+rejects anything else. Values were checked live: the quaternion heading matches
+the gimbal yaw, the magnetometer sits in the normal range, and battery voltage
+and percentage are plausible. GPS time arrives as UTC.
+
 ## Observations
 
 - From the controller the Orin receives mostly ~716-byte high-entropy frames

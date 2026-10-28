@@ -4,6 +4,8 @@
 //!
 //! * [`duml`] — transport-agnostic framing, checksums, reassembly, addressing.
 //! * [`gimbal`] — camera-mount commands we inject + attitude reports.
+//! * [`osdk`] — the Onboard SDK OpenProtocol (0xAA) the aircraft's OSDK UART
+//!   speaks; decode-only, for its flight-data broadcast.
 //! * [`telemetry`] — the link snapshot, folding in each feature's reports.
 //!
 //! New aircraft features (e.g. props/motors, camera settings) get a sibling
@@ -11,7 +13,8 @@
 
 pub mod duml;
 pub mod gimbal;
+pub mod osdk;
 pub mod telemetry;
 
 pub use duml::{Decoder, Device, Frame, Header};
-pub use telemetry::Telemetry;
+pub use telemetry::{FlightLink, Telemetry};

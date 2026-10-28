@@ -812,6 +812,96 @@ h3 {
   font-size: 9px;
   color: #7f99a9;
 }
+.flight-section {
+  margin-top: 38px;
+  scroll-margin-top: 24px;
+}
+.flight-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+.flight-stale .flight-grid {
+  opacity: 0.55;
+}
+.flight-tile {
+  background: #101a23;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px 16px;
+  min-width: 0;
+}
+.flight-tile strong {
+  display: block;
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.5px;
+  margin: 12px 0 6px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.flight-tile small {
+  display: block;
+  font-size: 10px;
+  color: #8ba0ad;
+  line-height: 1.5;
+}
+.flight-rows {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  display: grid;
+  gap: 6px;
+}
+.flight-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.flight-row .mono {
+  color: #c2dfed;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.stick {
+  display: grid;
+  grid-template-columns: 52px 1fr 38px;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.stick .mono {
+  text-align: right;
+  color: #c2dfed;
+}
+.stick-track {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: #0a131a;
+  border: 1px solid #2e4655;
+}
+.stick-track::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: #3d5869;
+}
+.stick-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+  border-radius: 2px;
+}
 .telemetry-section {
   margin-top: 38px;
   scroll-margin-top: 24px;
@@ -1013,6 +1103,9 @@ footer > span:first-child {
   }
 }
 @media (max-width: 1150px) {
+  .flight-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .sidebar {
     width: 180px;
     padding: 28px 15px;
@@ -1123,6 +1216,9 @@ footer > span:first-child {
   }
 }
 @media (max-width: 650px) {
+  .flight-grid {
+    gap: 8px;
+  }
   .sidebar {
     display: none;
   }
@@ -1267,6 +1363,9 @@ footer > span:first-child {
   }
 }
 @media (max-width: 370px) {
+  .flight-grid {
+    grid-template-columns: 1fr;
+  }
   h1 {
     font-size: 39px;
   }

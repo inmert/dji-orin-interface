@@ -3,6 +3,7 @@ import SpotlightCard from "./components/SpotlightCard";
 import StarBorder from "./components/StarBorder";
 import { useLink } from "./api";
 import { GimbalPad } from "./gimbal/GimbalPad";
+import { FlightPanel } from "./telemetry/FlightPanel";
 import { StreamsTable } from "./telemetry/StreamsTable";
 
 export function App() {
@@ -42,6 +43,9 @@ export function App() {
           </a>
           <a href="#cameras">
             <span>⊙</span> Camera control
+          </a>
+          <a href="#flight">
+            <span>△</span> Flight data
           </a>
           <a href="#telemetry">
             <span>≋</span> Telemetry{" "}
@@ -215,6 +219,7 @@ export function App() {
               />
             </div>
           </section>
+          <FlightPanel flight={telemetry.flight} connected={status === "open"} />
           <StreamsTable telemetry={telemetry} stale={!ready} />
           <footer>
             <span>

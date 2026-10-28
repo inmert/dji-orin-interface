@@ -42,7 +42,9 @@ of bulk endpoints.
 The aircraft can also be reached **directly, without the RC**: its USB API
 port (mode switch in the PC position) appears on the Orin as `/dev/ttyACM0` and
 carries the same DUML in both directions, with no SDK activation. Its OSDK UART
-only transmits; the aircraft never acknowledges commands on it. See
+only transmits; the aircraft never acknowledges commands on it, but its
+flight-data broadcast (attitude, altitude, velocity, GPS, battery, status) is
+decoded receive-only and shown in the web UI. See
 [docs/hardware.md](docs/hardware.md#direct-aircraft-links-no-rc).
 
 See [docs/protocol.md](docs/protocol.md) for the DUML frame format and the AOA
@@ -64,8 +66,10 @@ crates/
     src/gimbal.rs               gimbal feature: ids, Camera addressing
     src/gimbal/command.rs       move + camera-lock frames we inject
     src/gimbal/attitude.rs      attitude report decode (provisional)
+    src/osdk.rs                 OSDK OpenProtocol (0xAA) framing, decode-only
+    src/osdk/broadcast.rs       OSDK flight-data broadcast decode
     src/telemetry.rs            link snapshot for the web UI
-    tests/  benches/  examples/ integration tests, CRC/scan bench, Decoder example
+    tests/  benches/  examples/ integration tests, CRC/scan bench, decode examples
   transport/                  INFRASTRUCTURE — libc via hand-declared externs
     src/usb.rs                  read/write/errno for endpoint fds
     src/usb/usbfs.rs            host side: device lookup, control/bulk transfers
@@ -74,6 +78,7 @@ crates/
     src/aoa.rs                  Android Open Accessory constants + DJI identity
     src/aoa/host.rs             Orin as AOA host (toward a tablet)
     src/aoa/device.rs           Orin as AOA device (toward the RC)
+    src/serial.rs               receive-only serial port (OSDK UART)
 apps/
   tools/                      PRESENTATION — capture/bridge CLIs
     src/bin/ffs_capture.rs      Orin as the app toward the controller
@@ -84,6 +89,7 @@ apps/
     src/state.rs                desired gimbal state + UI command messages
     src/injector.rs             streams gimbal commands to the RC (ep2)
     src/reader.rs               decodes RC telemetry (ep1)
+    src/flight.rs               decodes the OSDK UART flight broadcast (rx only)
     src/ws.rs / http.rs         WebSocket + static file server
 web/                          Vite + React + TypeScript front end (built to web/dist)
 scripts/                      gadget bring-up/teardown + run_{capture,bridge,server}.sh
@@ -207,6 +213,22 @@ within seconds. Two ways it fails silently (the log stops at `gadget: BIND`):
   Replugging doesn't clear this; power-cycle the RC with the cable unplugged,
   then plug in after it boots.
 
+**Flight telemetry.** The server also reads the aircraft's OSDK UART
+(default `/dev/ttyTHS1`, 230400 baud) and shows its flight-data broadcast in
+the UI's *Flight telemetry* panel: status and flight mode, attitude, altitude,
+velocity, GPS, battery, obstacle distances, RC sticks, gimbal and compass. The
+port is opened read-only, so nothing can be sent to the aircraft on it. It runs
+independently of the RC link, so it works with the RC unplugged too.
+`OSDK_UART=/dev/ttyUSB0` picks another port (e.g. a 3.3 V USB-TTL adapter),
+`OSDK_UART=off` disables it, and `OSDK_BAUD` changes the rate:
+
+```bash
+sudo OSDK_UART=/dev/ttyUSB0 scripts/run_server.sh
+```
+
+To check a raw capture offline:
+`cargo run -p dji-protocol --example osdk_broadcast -- <capture.bin>`.
+
 For an **offline UI preview**, run `cd web && npm run dev` and open the printed
 local URL with `?preview=1` appended. Preview mode never opens the control
 WebSocket. `npm test` runs the frontend's offline control-handler and connection
@@ -248,8 +270,9 @@ DJI's encrypted/encoded stream, so the UI shows a placeholder for now.
 - [x] Native yaw reset decoded and hardware-verified: each camera independently,
       both via the master when linked; pitch is preserved
 - [x] Direct USB link to the aircraft (`/dev/ttyACM0`, DUML both ways, no RC)
-- [ ] Decode flight telemetry (attitude, GPS, battery, status) on the direct link
-- [ ] OSDK UART: aircraft never acks commands (receive-only so far)
+- [x] Flight telemetry in the UI from the OSDK UART broadcast (receive-only, live-verified)
+- [ ] Decode flight telemetry from the DUML on the direct USB link (`ttyACM0`)
+- [ ] OSDK UART commands: aircraft never acks them
 - [ ] Portal reset buttons per camera and reset-all (protocol builder ready)
 - [ ] Live camera video in the UI (encrypted downlink — research spike)
 - [ ] Send/inject flight commands to the aircraft

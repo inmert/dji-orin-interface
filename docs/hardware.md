@@ -74,7 +74,8 @@ flow control. The wire format is OSDK OpenProtocol (SOF `0xAA`, CRC16 `0xA001`
 and CRC32 `0xEDB88320`, both seeded `0x3AA3`), not DUML.
 
 Aircraft-to-Orin works: a three-second capture contained 182 valid OSDK frames,
-all unsolicited broadcasts. The flight controller never acknowledges anything
+all unsolicited broadcasts. The web server decodes that flight-data broadcast
+read-only (see [protocol.md](protocol.md#osdk-flight-data-broadcast-uart)). The flight controller never acknowledges anything
 sent to it, including the firmware-version query, so activation never starts.
 DJI's own OSDK 4.1 telemetry sample fails the same way ("Drone version not
 obtained"). Ruled out: API Control is on, the RC is on, the aircraft is out of

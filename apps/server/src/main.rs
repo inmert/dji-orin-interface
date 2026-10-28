@@ -5,9 +5,12 @@
 //! From the bulk streams it decodes telemetry ([`reader`]) and injects gimbal
 //! commands ([`injector`]). A web front end ([`http`]) talks to it over a
 //! WebSocket ([`ws`]): telemetry down, gimbal commands up ([`state`]).
+//! Independently, [`flight`] reads the aircraft's OSDK UART broadcast
+//! (attitude, velocity, GPS, status) receive-only.
 //!
 //! ```text
 //!   browser  ──HTTP :8080 / WS :8081──  server (Orin, gadget)  ──USB──  RC ── aircraft
+//!                                              └──── OSDK UART (rx only) ────────┘
 //! ```
 //!
 //! SAFETY: the gimbal commands move the real camera mount via the powered
@@ -15,7 +18,11 @@
 //! or the UI STOP releases every gimbal. Run props-off / aircraft secured.
 //!
 //! Usage: `server <ffs_mount_dir> [web_root]`        (run as root)
+//!
+//! `OSDK_UART` picks the flight-data port (default `/dev/ttyTHS1`; `off`
+//! disables it) and `OSDK_BAUD` its rate (default 230400).
 
+mod flight;
 mod http;
 mod injector;
 mod reader;
@@ -75,6 +82,17 @@ fn main() {
     {
         let (cmds, tele) = (Arc::clone(&cmds), Arc::clone(&tele));
         std::thread::spawn(move || ws::serve(cmds, tele));
+    }
+
+    // Flight data from the OSDK UART: receive-only, independent of the RC link.
+    let uart = std::env::var("OSDK_UART").unwrap_or_else(|_| "/dev/ttyTHS1".into());
+    if uart != "off" {
+        let baud = std::env::var("OSDK_BAUD")
+            .ok()
+            .and_then(|b| b.parse().ok())
+            .unwrap_or(230_400);
+        let tele = Arc::clone(&tele);
+        std::thread::spawn(move || flight::run(uart, baud, tele));
     }
 
     // USB gadget side: descriptors, then the ep0 event loop. run_server.sh binds

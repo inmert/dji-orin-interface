@@ -92,6 +92,10 @@ assert.equal(h.states[2].value, false, 'counter must advance again after reset')
 
 // Malformed nested rows previously passed parsing and crashed the render path.
 const good = JSON.parse(snapshot(3).data);
+const flightWith = data => ({ port: '/dev/ttyTHS1', open: true, frames: 5, rejected: 0, data: {
+  time_ms: 1, attitude: null, acceleration: null, velocity: null, angular_rate: null, position: null,
+  obstacles: null, gps: null, mag: null, rc: null, gimbal: null, status: null, battery: null,
+  compass: null, last_flags: 1, ...data } });
 const malformed = [
   { ...good, frames: -1 }, { ...good, frames: 3.5 },
   { ...good, frames: 1e100 }, { ...good, link_up: "true" },
@@ -100,6 +104,12 @@ const malformed = [
   { ...good, streams: { bad: { from: 'Gimbal', to: 'App', count: '1' } } },
   { ...good, gimbals: { 0: null } },
   { ...good, gimbals: { 0: { index: 0, pitch: {}, roll: 0, yaw: 0 } } },
+  { ...good, flight: null },
+  { ...good, flight: { port: '/dev/ttyTHS1', open: true, frames: 1, rejected: 0 } },
+  { ...good, flight: flightWith({ attitude: { roll: 0, pitch: 'x', yaw: 0 } }) },
+  { ...good, flight: flightWith({ status: { flight: 0, mode: 6, gear: 0, error: 0, flight_name: 'Stopped' } }) },
+  { ...good, flight: flightWith({ gps: { date: 1, time: 1, latitude: 0, longitude: 0, hfsl: 0, hdop: 0, pdop: 0, fix: 0, satellites: 0, velocity_ned: [0, 0] } }) },
+  { ...good, flight: flightWith({ mag: [1, 2] }) },
 ];
 now += 2500;
 tick();
@@ -111,6 +121,9 @@ for (const value of malformed) {
 sockets[1].onmessage({ data: JSON.stringify({ ...good,
   streams: { route: { from: 'Gimbal', to: 'App', cmd_set: 4, cmd_id: 5, count: 3, last_len: 12 } },
   gimbals: { 0: { index: 0, pitch: -10, roll: 0, yaw: 20, raw: 'f6 ff', provisional: true } },
+  flight: flightWith({ attitude: { roll: 3.9, pitch: -0.3, yaw: -97.5 },
+    status: { flight: 0, flight_name: 'Stopped', mode: 6, mode_name: 'P-GPS', gear: 1, gear_name: 'Down', error: 200 },
+    mag: [101, 582, 1366] }),
 }) });
 assert.equal(h.states[1].value.frames, 3, 'valid populated telemetry still accepted');
 assert.equal(h.states[2].value, false);
