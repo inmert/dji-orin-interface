@@ -65,7 +65,7 @@ crates/
     src/duml.rs                 DUML framing, checksums, Decoder, build, addressing
     src/gimbal.rs               gimbal feature: ids, Camera addressing
     src/gimbal/command.rs       move + camera-lock frames we inject
-    src/gimbal/attitude.rs      attitude report decode (provisional)
+    src/gimbal/attitude.rs      attitude report decode (0.1° units; yaw verified)
     src/flyc.rs, src/flyc/osd.rs  flight controller 0x03/0x43 report decode
     src/osdk.rs                 OSDK OpenProtocol (0xAA) framing, decode-only
     src/osdk/broadcast.rs       OSDK flight-data broadcast decode

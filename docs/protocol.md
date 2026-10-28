@@ -132,7 +132,10 @@ Decoded from captured DJI Pilot traffic and implemented in the `gimbal` module
   runtime with `GIMBAL_CMD_TYPE`. Whether the values are a driven setpoint or a
   speed is not yet characterized, but the UI's hold-to-move at a fixed magnitude
   works well in practice.
-- The attitude report is `cmd_set=0x04 cmd_id=0x05`.
+- The attitude report is `cmd_set=0x04 cmd_id=0x05`: the first three `i16`
+  are pitch, roll and yaw in 0.1°. Yaw was verified against the OSDK UART's
+  gimbal yaw (see *Flight telemetry on the direct USB link* below); pitch and
+  roll have only been compared at 0. Earlier sections quote these raw values.
 - **Yaw recenter is verified on the M210.** Use `04/4c FE 01` with command
   type `40`; it preserves pitch and work mode. Earlier notes suggested
   `0x04/0x10`, but the available logs do not establish that interpretation.
