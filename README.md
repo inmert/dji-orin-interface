@@ -295,8 +295,8 @@ to live video (see [docs/protocol.md](docs/protocol.md#fpv-camera-third-camera))
 - [x] OSDK UART two-way via a 3.3 V USB-TTL adapter: FC acks version queries
 - [x] OSDK 3.9.0 activation + telemetry subscription on the M210 V1 (via DJI Assistant 2 online)
 - [ ] OSDK UART via the Orin's own pins: receive-only, cause on the Orin side not isolated
-- [x] Portal yaw-recenter buttons per camera and recenter-all (built and unit-tested;
-      not yet pressed on the aircraft through the portal)
+- [x] Portal yaw-recenter per camera and recenter-all, verified on the aircraft
+      (2026-10-28; see docs/protocol.md)
 - [x] Third (FPV) camera identified: `Camera[1]`, fixed mount `Gimbal[4]`; shown in the UI
 - [ ] Live camera video in the UI (RC downlink encrypted; FPV H.264 over USB/UDT to be probed)
 - [ ] Send/inject flight commands to the aircraft

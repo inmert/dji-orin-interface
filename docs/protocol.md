@@ -295,6 +295,25 @@ must not trigger blind retries or be presented as proof that it did not move.
 After the tests, released both cameras, restored independent mode, stopped
 capture, and restored the stock USB gadget.
 
+### Portal recenter on the aircraft (2026-10-28)
+
+The portal's reset path (`{"cmd":"reset"}` over the WebSocket, the same
+message its buttons send) was run end to end on the M210 with props off,
+cameras independent. Each test was a 1 s yaw move at the portal's default
+speed (200), an explicit release, then one reset; the server log shows
+exactly one `yaw recenter sent` per target camera. Angles in degrees; the FPV
+mount (`Gimbal[4]`, aircraft heading) read 147.1 throughout.
+
+| Test | Off-center yaw | After reset | Settle | Other camera |
+|------|----------------|-------------|--------|--------------|
+| Recenter camera 1 | 167.1 | 147.1 | ~1.7 s | camera 2 unmoved |
+| Recenter camera 2 | 162.3 | 147.4 | ~2 s | camera 1 unmoved |
+| Recenter all (cam 1 left, cam 2 right) | 126.9 / 162.4 | 147.1 / 147.4 | ~2 s | both returned |
+
+Pitch was unchanged in every test (camera 1 1.2, camera 2 within ±0.1), so
+"center" is yaw aligned with the aircraft heading. Linked-mode recenter through
+the portal was not repeated here; it was verified by direct injection above.
+
 ### Camera lock (dual-gimbal follow)
 
 Pilot's "lock cameras together" button, captured from its traffic. Addressed to
