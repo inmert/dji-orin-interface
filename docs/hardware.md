@@ -43,15 +43,49 @@ DJI device (`2ca3:4016`) in Android PC mode: mass storage + ADB + a CDC-ACM
 serial (`/dev/ttyACM0`, idle). `aoa_capture` runs the AOA host handshake toward
 it; the CrystalSky then re-enumerates as `18d1:2d01` and DJI Pilot streams DUML.
 
-## Other interfaces on the Orin (not used)
+## Direct aircraft UART diagnosis (2026-10-27)
 
-- `/dev/ttyTHS1`, `/dev/ttyTHS2` — Tegra UARTs (idle). These would be the DJI
-  Onboard SDK path (direct to the aircraft), which this project does not use.
+The aircraft OSDK UART is being investigated separately from the USB tablet
+bridge. Physical header pin 8 is TX (`/dev/ttyTHS1`, UARTA at `0x03100000`),
+pin 10 is RX, and pin 6 is ground. Aircraft RX connects to Orin TX and vice
+versa. The configured baud rate is 230400, 8N1, without flow control.
+
+Aircraft-to-Orin reception works: a three-second capture contained 182 valid
+OSDK frames (SOF `AA`, header CRC16 and frame CRC32 verified), all broadcasts.
+Firmware-version queries received no matching ACK, including writes split
+into single bytes to exercise the serial driver's short-write PIO path.
+Activation has therefore not been verified. OSDK 4.1 targets newer aircraft;
+the M210 V1 is listed by OSDK 3.8.1. An earlier 3.8.1 version probe also failed.
+
+With the aircraft TX/RX disconnected and the user reporting a jumper between
+pins 8 and 10, local loopback failed at both 230400 and 115200 baud, with both
+full-buffer and single-byte writes. This failure occurs independently of DJI
+credentials, API-control settings, or the OSDK handshake.
+
+The UART pad settings were TX `0x024300a8=0x400`, RX
+`0x024300a0=0x458`, consistent with UART SFIO/output and SFIO/input respectively.
+Temporarily clearing the TX GPIO output-float bit did not restore loopback.
+A separate temporary GPIO test drove TX high/low while reading RX: the TX
+output latch changed, but RX remained low on all five samples. All modified
+registers were restored and read back successfully. Register readback does
+not prove that the physical TX pad changed voltage.
+
+The remaining fault is not isolated: jumper contact/pin placement, the header
+electrical path, and low-level pad/controller behavior remain candidates.
+Measure physical pin 8 against ground or test with an independently verified
+3.3 V TTL adapter before making persistent pinmux/boot changes. Diagnostic
+captures and the version-query script are in ignored
+`captures/osdk/uart-diagnostics/`; private activation configuration is also
+under ignored `captures/osdk/` and must not be committed.
+
+## Other interfaces on the Orin
+
+- `/dev/ttyTHS2` — another Tegra UART; not the tested header pins 8/10.
 - `can0` — CAN controller present, no traffic.
 - `usb0` / `l4tbr0` — the Orin's own USB-gadget RNDIS networking; the controller
   does not use IP over this link.
 
 ## Access notes
 
-- The user `dog` is not in the `dialout` group; serial/USB work currently uses
-  `sudo`. Add to `dialout` (and a udev rule for the USB nodes) to drop `sudo`.
+- The user `dog` is in `dialout`. Root access is still needed for GPIO/pinmux
+  register diagnostics and USB gadget management.
