@@ -1,40 +1,87 @@
-//! Flight-data reader: decodes the OSDK broadcast the aircraft pushes on its
-//! SDK UART into the shared [`Telemetry`](dji_protocol::Telemetry).
+//! Direct aircraft readers: decode what the aircraft pushes on its own ports
+//! into the shared [`Telemetry`], independent of (and alongside) the RC link.
 //!
-//! Receive-only by construction: the port is opened `O_RDONLY`
-//! ([`RxPort`]), so this can never send anything to the aircraft. Runs
-//! alongside (and independent of) the RC USB link; a missing or unplugged
-//! port is retried every few seconds.
+//! * [`Osdk`] — the OSDK broadcast on the SDK UART (`ttyTHS1`).
+//! * [`Usb`] — the DUML reports on the USB API port (`ttyACM0`).
+//!
+//! Receive-only by construction: ports are opened `O_RDONLY` ([`RxPort`]), so
+//! nothing here can send anything to the aircraft. A missing or unplugged port
+//! is retried every few seconds.
 
 use std::io::ErrorKind;
 use std::thread::sleep;
 use std::time::Duration;
 
 use dji_common::logln;
-use dji_protocol::osdk;
+use dji_protocol::{Telemetry, duml, osdk};
 use dji_transport::serial::RxPort;
 
 use crate::reader::Tele;
 
 const RETRY: Duration = Duration::from_secs(5);
 
-pub fn run(port: String, baud: u32, tele: Tele) {
-    tele.lock().unwrap().flight.port.clone_from(&port);
+/// A protocol decoder for one port, rebuilt each time the port is opened.
+pub trait Link: Default {
+    const NAME: &'static str;
+    /// The link's `(port, open)` fields in the snapshot.
+    fn state(t: &mut Telemetry) -> (&mut String, &mut bool);
+    /// Decode freshly read bytes into the snapshot.
+    fn feed(&mut self, bytes: &[u8], t: &mut Telemetry);
+}
+
+#[derive(Default)]
+pub struct Osdk(osdk::Decoder);
+
+impl Link for Osdk {
+    const NAME: &'static str = "flight";
+    fn state(t: &mut Telemetry) -> (&mut String, &mut bool) {
+        (&mut t.flight.port, &mut t.flight.open)
+    }
+    fn feed(&mut self, bytes: &[u8], t: &mut Telemetry) {
+        self.0.push(bytes);
+        self.0.drain(|f| t.flight.update(f));
+    }
+}
+
+#[derive(Default)]
+pub struct Usb(duml::Decoder);
+
+impl Link for Usb {
+    const NAME: &'static str = "usb";
+    fn state(t: &mut Telemetry) -> (&mut String, &mut bool) {
+        (&mut t.usb.port, &mut t.usb.open)
+    }
+    fn feed(&mut self, bytes: &[u8], t: &mut Telemetry) {
+        self.0.push(bytes);
+        self.0.drain(|f| {
+            if f.crc_ok {
+                t.usb.update(f);
+            }
+        });
+    }
+}
+
+fn set_open<L: Link>(tele: &Tele, open: bool) {
+    *L::state(&mut tele.lock().unwrap()).1 = open;
+}
+
+pub fn run<L: Link>(port: String, baud: u32, tele: Tele) {
+    L::state(&mut tele.lock().unwrap()).0.clone_from(&port);
     let mut last_err = String::new();
     loop {
         match RxPort::open(&port, baud) {
             Ok(rx) => {
-                logln!("flight: reading {port} at {baud} baud (receive-only)");
+                logln!("{}: reading {port} (receive-only)", L::NAME);
                 last_err.clear();
-                tele.lock().unwrap().flight.open = true;
-                read(rx, &tele);
-                tele.lock().unwrap().flight.open = false;
+                set_open::<L>(&tele, true);
+                read::<L>(rx, &tele);
+                set_open::<L>(&tele, false);
             }
             Err(e) => {
                 // Log each distinct failure once, not every retry.
                 let msg = e.to_string();
                 if msg != last_err {
-                    logln!("flight: cannot open {port}: {msg}; retrying");
+                    logln!("{}: cannot open {port}: {msg}; retrying", L::NAME);
                     last_err = msg;
                 }
             }
@@ -43,21 +90,17 @@ pub fn run(port: String, baud: u32, tele: Tele) {
     }
 }
 
-/// Read and decode until the port fails (e.g. a USB adapter is unplugged).
-fn read(mut rx: RxPort, tele: &Tele) {
-    let mut decoder = osdk::Decoder::new();
+/// Read and decode until the port fails (e.g. the cable is unplugged).
+fn read<L: Link>(mut rx: RxPort, tele: &Tele) {
+    let mut link = L::default();
     let mut buf = vec![0u8; 4096];
     loop {
         match rx.read(&mut buf) {
             Ok(0) => {}
-            Ok(n) => {
-                decoder.push(&buf[..n]);
-                let mut t = tele.lock().unwrap();
-                decoder.drain(|f| t.flight.update(f));
-            }
+            Ok(n) => link.feed(&buf[..n], &mut tele.lock().unwrap()),
             Err(e) if e.kind() == ErrorKind::Interrupted => {}
             Err(e) => {
-                logln!("flight: read error: {e}; reopening");
+                logln!("{}: read error: {e}; reopening", L::NAME);
                 return;
             }
         }

@@ -66,6 +66,7 @@ crates/
     src/gimbal.rs               gimbal feature: ids, Camera addressing
     src/gimbal/command.rs       move + camera-lock frames we inject
     src/gimbal/attitude.rs      attitude report decode (provisional)
+    src/flyc.rs, src/flyc/osd.rs  flight controller 0x03/0x43 report decode
     src/osdk.rs                 OSDK OpenProtocol (0xAA) framing, decode-only
     src/osdk/broadcast.rs       OSDK flight-data broadcast decode
     src/telemetry.rs            link snapshot for the web UI
@@ -89,7 +90,7 @@ apps/
     src/state.rs                desired gimbal state + UI command messages
     src/injector.rs             streams gimbal commands to the RC (ep2)
     src/reader.rs               decodes RC telemetry (ep1)
-    src/flight.rs               decodes the OSDK UART flight broadcast (rx only)
+    src/flight.rs               direct aircraft readers: OSDK UART + USB API port (rx only)
     src/ws.rs / http.rs         WebSocket + static file server
 web/                          Vite + React + TypeScript front end (built to web/dist)
 scripts/                      gadget bring-up/teardown + run_{capture,bridge,server}.sh
@@ -226,6 +227,13 @@ independently of the RC link, so it works with the RC unplugged too.
 sudo OSDK_UART=/dev/ttyUSB0 scripts/run_server.sh
 ```
 
+**Direct USB link.** The server likewise reads the aircraft's USB API port
+(`/dev/ttyACM0`; mode switch in the PC position) read-only and shows the reports
+the aircraft sends there unasked in the *Direct USB link* panel: attitude,
+flight mode, satellite count and the camera 1 gimbal angles. Position, height
+and velocity are shown as unverified until checked with a GPS fix and in
+motion. `USB_ACM` picks another port, or `off` disables it.
+
 To check a raw capture offline:
 `cargo run -p dji-protocol --example osdk_broadcast -- <capture.bin>`.
 
@@ -271,7 +279,8 @@ DJI's encrypted/encoded stream, so the UI shows a placeholder for now.
       both via the master when linked; pitch is preserved
 - [x] Direct USB link to the aircraft (`/dev/ttyACM0`, DUML both ways, no RC)
 - [x] Flight telemetry in the UI from the OSDK UART broadcast (receive-only, live-verified)
-- [ ] Decode flight telemetry from the DUML on the direct USB link (`ttyACM0`)
+- [x] Flight telemetry from the direct USB link (`ttyACM0`): attitude, mode, satellites, gimbal (live-verified)
+- [ ] Verify USB-link position/height/velocity offsets (needs a GPS fix and motion)
 - [ ] OSDK UART commands: aircraft never acks them
 - [ ] Portal reset buttons per camera and reset-all (protocol builder ready)
 - [ ] Live camera video in the UI (encrypted downlink — research spike)

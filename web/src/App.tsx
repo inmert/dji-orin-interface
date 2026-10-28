@@ -5,6 +5,7 @@ import { useLink } from "./api";
 import { GimbalPad } from "./gimbal/GimbalPad";
 import { FlightPanel } from "./telemetry/FlightPanel";
 import { StreamsTable } from "./telemetry/StreamsTable";
+import { UsbPanel } from "./telemetry/UsbPanel";
 
 export function App() {
   const { status, telemetry, stale, send } = useLink();
@@ -46,6 +47,9 @@ export function App() {
           </a>
           <a href="#flight">
             <span>△</span> Flight data
+          </a>
+          <a href="#usb">
+            <span>⇌</span> USB link
           </a>
           <a href="#telemetry">
             <span>≋</span> Telemetry{" "}
@@ -220,6 +224,7 @@ export function App() {
             </div>
           </section>
           <FlightPanel flight={telemetry.flight} connected={status === "open"} />
+          <UsbPanel usb={telemetry.usb} connected={status === "open"} />
           <StreamsTable telemetry={telemetry} stale={!ready} />
           <footer>
             <span>

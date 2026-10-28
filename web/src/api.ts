@@ -58,6 +58,30 @@ export interface FlightLink {
   data: FlightData;
 }
 
+// --- USB API port DUML (mirror UsbLink in crates/protocol/src/telemetry.rs
+//     and crates/protocol/src/flyc/osd.rs) ---
+
+export interface FcOsd {
+  /** Degrees. */
+  pitch: number;
+  roll: number;
+  yaw: number;
+  mode: number;
+  mode_name: string;
+  satellites: number;
+  /** Offsets only seen at zero so far. */
+  unverified: { latitude: number; longitude: number; height: number; velocity: Vec3 };
+}
+
+export interface UsbLink {
+  port: string;
+  open: boolean;
+  frames: number;
+  osd: FcOsd | null;
+  /** Gimbal attitude per device index, wire units of 0.1°. */
+  gimbals: Record<string, GimbalAttitude>;
+}
+
 export interface Telemetry {
   link_up: boolean;
   frames: number;
@@ -65,6 +89,8 @@ export interface Telemetry {
   streams: Record<string, StreamStat>;
   /** OSDK UART flight data; absent from servers that predate it. */
   flight?: FlightLink;
+  /** Aircraft USB API port DUML; absent from servers that predate it. */
+  usb?: UsbLink;
   /** Server-authoritative camera-link state, so a refreshed page reflects it. */
   linked: boolean;
 }
@@ -120,16 +146,29 @@ export function isFlightLink(value: unknown): value is FlightLink {
     && counter(d.last_flags);
 }
 
+const isGimbal = (g: unknown) => record(g)
+  && counter(g.index) && g.index <= 7
+  && finite(g.pitch) && finite(g.roll) && finite(g.yaw)
+  && typeof g.raw === "string" && typeof g.provisional === "boolean";
+
+export function isUsbLink(value: unknown): value is UsbLink {
+  return record(value) && typeof value.port === "string" && typeof value.open === "boolean"
+    && counter(value.frames) && record(value.gimbals)
+    && Object.values(value.gimbals).every(isGimbal)
+    && optional(value.osd, o => nums(o, ["pitch", "roll", "yaw", "mode", "satellites"])
+      && typeof (o as Record<string, unknown>).mode_name === "string"
+      && nums((o as Record<string, unknown>).unverified, ["latitude", "longitude", "height"])
+      && vec3(((o as Record<string, unknown>).unverified as Record<string, unknown>).velocity));
+}
+
 // JSON parsing alone does not validate a snapshot. Reject the whole message
 // before it changes freshness or reaches components that dereference its rows.
 export function isTelemetry(value: unknown): value is Telemetry {
   if (!record(value) || !counter(value.frames) || typeof value.link_up !== "boolean"
     || typeof value.linked !== "boolean" || !record(value.gimbals) || !record(value.streams)
-    || (value.flight !== undefined && !isFlightLink(value.flight))) return false;
-  return Object.values(value.gimbals).every(g => record(g)
-    && counter(g.index) && g.index <= 7
-    && finite(g.pitch) && finite(g.roll) && finite(g.yaw)
-    && typeof g.raw === "string" && typeof g.provisional === "boolean")
+    || (value.flight !== undefined && !isFlightLink(value.flight))
+    || (value.usb !== undefined && !isUsbLink(value.usb))) return false;
+  return Object.values(value.gimbals).every(isGimbal)
     && Object.values(value.streams).every(s => record(s)
       && typeof s.from === "string" && typeof s.to === "string"
       && byte(s.cmd_set) && byte(s.cmd_id) && counter(s.count) && counter(s.last_len));

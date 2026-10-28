@@ -380,6 +380,11 @@ roll read 0 on both links, so they are consistent but not strongly tested.
 Battery, RC sticks and obstacle distances are not sent unasked here; reading
 them over USB would mean sending a query to the aircraft.
 
+The web server decodes these frames read-only
+([`flyc/osd.rs`](../crates/protocol/src/flyc/osd.rs)) and shows them in its
+*Direct USB link* panel. In a live check, the panel's attitude matched the UART
+panel's attitude at the same moment (143.1°, 2.3°, 1.3°).
+
 ## Observations
 
 - From the controller the Orin receives mostly ~716-byte high-entropy frames

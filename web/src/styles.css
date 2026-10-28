@@ -821,7 +821,13 @@ h3 {
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
 }
-.flight-stale .flight-grid {
+.usb-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.flight-stale .flight-grid,
+.usb-grid.flight-stale {
   opacity: 0.55;
 }
 .flight-tile {
@@ -1216,8 +1222,12 @@ footer > span:first-child {
   }
 }
 @media (max-width: 650px) {
-  .flight-grid {
+  .flight-grid,
+  .usb-grid {
     gap: 8px;
+  }
+  .usb-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .sidebar {
     display: none;
@@ -1363,7 +1373,8 @@ footer > span:first-child {
   }
 }
 @media (max-width: 370px) {
-  .flight-grid {
+  .flight-grid,
+  .usb-grid {
     grid-template-columns: 1fr;
   }
   h1 {

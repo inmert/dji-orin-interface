@@ -1,8 +1,6 @@
-import { ReactNode, useEffect, useRef, useState } from "react";
 import { FlightData, FlightLink } from "../api";
+import { Row, Tile, deg, fixed, useAdvancing } from "./Tile";
 
-const fixed = (n: number, digits = 1) => n.toFixed(digits);
-const deg = (n: number) => `${fixed(n)}°`;
 const pad2 = (n: number) => n.toString().padStart(2, "0");
 
 /** hhmmss (as the FC sends it, UTC) → hh:mm:ss. */
@@ -16,28 +14,6 @@ function clock(hhmmss: number) {
 const range = (m: number) => (m >= 100 ? "clear" : `${fixed(m, 2)} m`);
 
 const COMPASS = ["Normal", "Needs calibration", "Needs direction fix", "Needs restart"];
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flight-row">
-      <span>{label}</span>
-      <span className="mono">{value}</span>
-    </div>
-  );
-}
-
-function Tile({ label, value, note, children }: {
-  label: string; value: string; note?: string; children?: ReactNode;
-}) {
-  return (
-    <div className="flight-tile">
-      <span className="metric-label">{label}</span>
-      <strong>{value}</strong>
-      {note && <small>{note}</small>}
-      {children && <div className="flight-rows">{children}</div>}
-    </div>
-  );
-}
 
 /** A centred stick bar, ±10000 → ±50% of the track. */
 function Stick({ label, value }: { label: string; value: number }) {
@@ -128,22 +104,7 @@ function Tiles({ d }: { d: FlightData }) {
 
 /** Flight data from the aircraft's OSDK UART broadcast (receive-only). */
 export function FlightPanel({ flight, connected }: { flight: FlightLink | undefined; connected: boolean }) {
-  // Live only while the frame counter keeps advancing.
-  const [live, setLive] = useState(false);
-  const last = useRef<{ frames?: number; at: number }>({ at: 0 });
-  const frames = flight?.frames;
-  useEffect(() => {
-    if (frames === undefined) return;
-    if (last.current.frames !== undefined && frames > last.current.frames) {
-      last.current.at = Date.now();
-      setLive(true);
-    }
-    last.current.frames = frames;
-  }, [frames]);
-  useEffect(() => {
-    const timer = window.setInterval(() => setLive(Date.now() - last.current.at < 2000), 500);
-    return () => clearInterval(timer);
-  }, []);
+  const live = useAdvancing(flight?.frames);
   const fresh = connected && live;
 
   let note: string;

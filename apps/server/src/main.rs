@@ -5,12 +5,14 @@
 //! From the bulk streams it decodes telemetry ([`reader`]) and injects gimbal
 //! commands ([`injector`]). A web front end ([`http`]) talks to it over a
 //! WebSocket ([`ws`]): telemetry down, gimbal commands up ([`state`]).
-//! Independently, [`flight`] reads the aircraft's OSDK UART broadcast
-//! (attitude, velocity, GPS, status) receive-only.
+//! Independently, [`flight`] reads what the aircraft pushes on its own ports,
+//! receive-only: the OSDK UART broadcast (attitude, velocity, GPS, battery,
+//! status) and the DUML reports on its USB API port (attitude, flight mode).
 //!
 //! ```text
 //!   browser  ──HTTP :8080 / WS :8081──  server (Orin, gadget)  ──USB──  RC ── aircraft
-//!                                              └──── OSDK UART (rx only) ────────┘
+//!                                              ├──── OSDK UART (rx only) ────────┤
+//!                                              └──── USB API port (rx only) ─────┘
 //! ```
 //!
 //! SAFETY: the gimbal commands move the real camera mount via the powered
@@ -20,7 +22,8 @@
 //! Usage: `server <ffs_mount_dir> [web_root]`        (run as root)
 //!
 //! `OSDK_UART` picks the flight-data port (default `/dev/ttyTHS1`; `off`
-//! disables it) and `OSDK_BAUD` its rate (default 230400).
+//! disables it) and `OSDK_BAUD` its rate (default 230400). `USB_ACM` picks the
+//! aircraft's USB API serial port (default `/dev/ttyACM0`; `off` disables it).
 
 mod flight;
 mod http;
@@ -84,15 +87,23 @@ fn main() {
         std::thread::spawn(move || ws::serve(cmds, tele));
     }
 
-    // Flight data from the OSDK UART: receive-only, independent of the RC link.
-    let uart = std::env::var("OSDK_UART").unwrap_or_else(|_| "/dev/ttyTHS1".into());
-    if uart != "off" {
+    // Direct aircraft ports: receive-only, independent of the RC link.
+    let port = |var, default: &str| {
+        let p = std::env::var(var).unwrap_or_else(|_| default.into());
+        (p != "off").then_some(p)
+    };
+    if let Some(uart) = port("OSDK_UART", "/dev/ttyTHS1") {
         let baud = std::env::var("OSDK_BAUD")
             .ok()
             .and_then(|b| b.parse().ok())
             .unwrap_or(230_400);
         let tele = Arc::clone(&tele);
-        std::thread::spawn(move || flight::run(uart, baud, tele));
+        std::thread::spawn(move || flight::run::<flight::Osdk>(uart, baud, tele));
+    }
+    if let Some(acm) = port("USB_ACM", "/dev/ttyACM0") {
+        // CDC-ACM ignores the line rate; any supported value works.
+        let tele = Arc::clone(&tele);
+        std::thread::spawn(move || flight::run::<flight::Usb>(acm, 115_200, tele));
     }
 
     // USB gadget side: descriptors, then the ep0 event loop. run_server.sh binds

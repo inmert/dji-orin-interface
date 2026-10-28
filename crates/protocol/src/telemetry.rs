@@ -1,6 +1,7 @@
 //! Telemetry: a serializable snapshot built from the DUML the aircraft streams
 //! up through the controller, plus the flight-data broadcast from its OSDK
-//! UART ([`FlightLink`]), broadcast to the web UI over WebSocket.
+//! UART ([`FlightLink`]) and the DUML on its USB API port ([`UsbLink`]),
+//! broadcast to the web UI over WebSocket.
 //!
 //! Field decoding is deliberately conservative. The stream/activity table is
 //! exact (it only reports what frames arrived); per-feature decodes live with
@@ -10,6 +11,7 @@
 use std::collections::BTreeMap;
 
 use crate::duml::{DevName, Frame};
+use crate::flyc;
 use crate::gimbal;
 use crate::osdk::{self, broadcast};
 
@@ -41,6 +43,36 @@ pub struct Telemetry {
     pub streams: BTreeMap<String, StreamStat>,
     /// Flight data from the OSDK UART, independent of the DUML link above.
     pub flight: FlightLink,
+    /// DUML from the aircraft's USB API port (`ttyACM0`), also independent.
+    pub usb: UsbLink,
+}
+
+/// The aircraft's USB API port (receive-only): the reports it pushes unasked.
+#[derive(Clone, Default, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct UsbLink {
+    /// Serial port being read; empty when the reader is disabled.
+    pub port: String,
+    /// The port is open and being read.
+    pub open: bool,
+    /// CRC-valid DUML frames received.
+    pub frames: u64,
+    /// Latest flight controller general-data report.
+    pub osd: Option<flyc::Osd>,
+    /// Latest attitude per gimbal index (wire units 0.1°).
+    pub gimbals: BTreeMap<u8, gimbal::Attitude>,
+}
+
+impl UsbLink {
+    /// Fold one CRC-valid DUML frame in.
+    pub fn update(&mut self, f: &Frame) {
+        self.frames += 1;
+        if let Some(o) = flyc::Osd::decode(f) {
+            self.osd = Some(o);
+        } else if let Some(a) = gimbal::Attitude::decode(f) {
+            self.gimbals.insert(a.index, a);
+        }
+    }
 }
 
 /// The aircraft's OSDK UART flight-data broadcast (receive-only).
@@ -168,6 +200,30 @@ mod tests {
         l.update(&frame(0x00, &time_only, 0)); // not a broadcast
         assert_eq!((l.frames, l.rejected), (1, 2));
         assert_eq!(l.data.time_ms, Some(42));
+    }
+
+    #[test]
+    fn usb_link_keeps_latest_fc_and_gimbal_reports() {
+        let mut u = UsbLink::default();
+        let gimbal = attitude_frame(0);
+        u.update(&duml::parse(&gimbal).unwrap().0);
+        let header = duml::Header {
+            sender: duml::addr(Device::FlightCtrl, 0),
+            receiver: duml::addr(Device::Pc, 0),
+            seq: 2,
+            cmd_type: 0x00,
+            cmd_set: flyc::CMD_SET,
+            cmd_id: flyc::CMD_ID_OSD,
+        };
+        let mut p = vec![0u8; 55];
+        p[28..30].copy_from_slice(&1430i16.to_le_bytes());
+        p[30] = 6;
+        let osd = duml::build(&header, &p).unwrap();
+        u.update(&duml::parse(&osd).unwrap().0);
+        assert_eq!(u.frames, 2);
+        assert_eq!(u.gimbals[&0].yaw, -20);
+        let o = u.osd.as_ref().unwrap();
+        assert_eq!((o.yaw, o.mode_name), (143.0, "P-GPS"));
     }
 
     #[test]

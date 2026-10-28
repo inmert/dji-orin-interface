@@ -96,6 +96,9 @@ const flightWith = data => ({ port: '/dev/ttyTHS1', open: true, frames: 5, rejec
   time_ms: 1, attitude: null, acceleration: null, velocity: null, angular_rate: null, position: null,
   obstacles: null, gps: null, mag: null, rc: null, gimbal: null, status: null, battery: null,
   compass: null, last_flags: 1, ...data } });
+const usbOsd = { pitch: 1.3, roll: 2.3, yaw: 143, mode: 6, mode_name: 'P-GPS', satellites: 0,
+  unverified: { latitude: 0, longitude: 0, height: 0, velocity: [0, 0, 0] } };
+const usbLink = { port: '/dev/ttyACM0', open: true, frames: 4, osd: usbOsd, gimbals: {} };
 const malformed = [
   { ...good, frames: -1 }, { ...good, frames: 3.5 },
   { ...good, frames: 1e100 }, { ...good, link_up: "true" },
@@ -110,6 +113,10 @@ const malformed = [
   { ...good, flight: flightWith({ status: { flight: 0, mode: 6, gear: 0, error: 0, flight_name: 'Stopped' } }) },
   { ...good, flight: flightWith({ gps: { date: 1, time: 1, latitude: 0, longitude: 0, hfsl: 0, hdop: 0, pdop: 0, fix: 0, satellites: 0, velocity_ned: [0, 0] } }) },
   { ...good, flight: flightWith({ mag: [1, 2] }) },
+  { ...good, usb: null },
+  { ...good, usb: { ...usbLink, gimbals: { 0: { index: 0, pitch: 0 } } } },
+  { ...good, usb: { ...usbLink, osd: { ...usbOsd, yaw: '143' } } },
+  { ...good, usb: { ...usbLink, osd: { ...usbOsd, unverified: { latitude: 0, longitude: 0, height: 0 } } } },
 ];
 now += 2500;
 tick();
@@ -124,6 +131,7 @@ sockets[1].onmessage({ data: JSON.stringify({ ...good,
   flight: flightWith({ attitude: { roll: 3.9, pitch: -0.3, yaw: -97.5 },
     status: { flight: 0, flight_name: 'Stopped', mode: 6, mode_name: 'P-GPS', gear: 1, gear_name: 'Down', error: 200 },
     mag: [101, 582, 1366] }),
+  usb: { ...usbLink, gimbals: { 0: { index: 0, pitch: 0, roll: 0, yaw: 1425, raw: '', provisional: true } } },
 }) });
 assert.equal(h.states[1].value.frames, 3, 'valid populated telemetry still accepted');
 assert.equal(h.states[2].value, false);
