@@ -347,6 +347,39 @@ rejects anything else. Values were checked live: the quaternion heading matches
 the gimbal yaw, the magnetometer sits in the normal range, and battery voltage
 and percentage are plausible. GPS time arrives as UTC.
 
+## Flight telemetry on the direct USB link (`ttyACM0`)
+
+Mapped from a passive 20-second capture of `ttyACM0` and the OSDK UART at the
+same time (both opened read-only, aircraft on the ground indoors). The UART's
+decoded values served as ground truth. Without being asked, the aircraft
+sends only three streams to `PC[0]` on this link:
+
+| route | rate | content |
+|-------|------|---------|
+| `FlightCtrl[0] 0x03/0x43`, 55 bytes | 1 Hz | flight controller general data (below) |
+| `Gimbal[0] 0x04/0x05`, 24 bytes | 2 Hz | gimbal attitude: first three `i16` = pitch, roll, yaw in **0.1°** |
+| `FlightCtrl[0] 0x11/0x01`, 5 bytes | 1 Hz | bytes 1–2 count up by 17 per second; purpose unknown |
+
+`0x03/0x43` payload, little-endian:
+
+| offset | type | field | checked against the UART |
+|--------|------|-------|--------------------------|
+| 0, 8 | `f64` | longitude, latitude | zero without a GPS fix; not yet verified |
+| 16 | `i16` | relative height, 0.1 m | zero on the ground; not yet verified |
+| 18, 20, 22 | `i16` | velocity x, y, z, 0.1 m/s | zero at rest; not yet verified |
+| 24 | `i16` | pitch, 0.1° | matches (1.3° vs 1.3°) |
+| 26 | `i16` | roll, 0.1° | matches (2.3° vs 2.3–2.4°) |
+| 28 | `i16` | yaw, 0.1° | matches (142.9–143.0° vs 143.0°) |
+| 30 | `u8` | flight mode (6 = P-GPS, same numbering as OSDK) | matches |
+| 36 | `u8` | GPS satellites | matches (0 indoors) |
+
+The gimbal report's yaw matched the UART's gimbal yaw exactly (1425 = 142.5°),
+which settles the units of the attitude decode in
+[`gimbal/attitude.rs`](../crates/protocol/src/gimbal/attitude.rs); its pitch and
+roll read 0 on both links, so they are consistent but not strongly tested.
+Battery, RC sticks and obstacle distances are not sent unasked here; reading
+them over USB would mean sending a query to the aircraft.
+
 ## Observations
 
 - From the controller the Orin receives mostly ~716-byte high-entropy frames
