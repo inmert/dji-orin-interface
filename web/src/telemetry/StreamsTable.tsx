@@ -21,6 +21,12 @@ const DEVICE: Record<string, string> = {
   PC: "PC (USB API port)",
   Battery: "Battery",
   ESC: "ESCs",
+  DM36xGnd: "Video transcoder, ground side",
+  HDLinkGnd: "HD link, ground side",
+  USBAir: "USB controller, air side",
+  USBGnd: "USB controller, ground side",
+  Monocular: "Vision (monocular)",
+  Binocular: "Vision (binocular)",
 };
 
 /** What each device on this aircraft is (docs/protocol.md). */
@@ -43,6 +49,7 @@ const COMMAND_SET = [
 /** Commands this project has decoded (docs/protocol.md), by `set/id`. */
 const COMMAND: Record<string, string> = {
   "00/01": "Get version",
+  "00/f1": "Self-test state",
   "02/42": "Thermal palette",
   "02/80": "Camera status",
   "02/f1": "Thermal setting",
@@ -51,6 +58,11 @@ const COMMAND: Record<string, string> = {
   "04/05": "Gimbal attitude",
   "04/0c": "Gimbal move",
   "04/4c": "Gimbal recenter",
+  "0a/06": "Avoidance parameters",
+  "0a/07": "Obstacle info",
+  "0a/19": "Flat check",
+  "0a/2e": "Vision function list",
+  "0a/2f": "Vision sensor status",
 };
 
 const deviceType = (name: string) => name.replace(/\[\d+\]$/, "");

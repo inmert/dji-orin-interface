@@ -42,6 +42,14 @@ pub enum Device {
     Pc = 0x0A,
     Battery = 0x0B,
     Esc = 0x0C,
+    Dm36xGnd = 0x0D,
+    HdLinkGnd = 0x0E,
+    UsbAir = 0x0F,
+    UsbGnd = 0x10,
+    Monocular = 0x11,
+    /// Binocular vision (stereo obstacle sensing). Pushes the `0x0a` vision
+    /// command set to the app on the RC link.
+    Binocular = 0x12,
 }
 
 impl Device {
@@ -51,7 +59,9 @@ impl Device {
     }
 }
 
-const DEVICE_NAMES: [&str; 13] = [
+/// Names after dji-firmware-tools' dissector, shortened; `Device::name` indexes
+/// this by the enum value, so it stays contiguous from 0x00.
+const DEVICE_NAMES: [&str; 19] = [
     "Any",
     "Camera",
     "App",
@@ -65,6 +75,12 @@ const DEVICE_NAMES: [&str; 13] = [
     "PC",
     "Battery",
     "ESC",
+    "DM36xGnd",
+    "HDLinkGnd",
+    "USBAir",
+    "USBGnd",
+    "Monocular",
+    "Binocular",
 ];
 
 impl TryFrom<u8> for Device {
@@ -87,6 +103,12 @@ impl TryFrom<u8> for Device {
             0x0A => Device::Pc,
             0x0B => Device::Battery,
             0x0C => Device::Esc,
+            0x0D => Device::Dm36xGnd,
+            0x0E => Device::HdLinkGnd,
+            0x0F => Device::UsbAir,
+            0x10 => Device::UsbGnd,
+            0x11 => Device::Monocular,
+            0x12 => Device::Binocular,
             other => return Err(other),
         })
     }
@@ -494,5 +516,12 @@ mod tests {
         assert_eq!(Device::try_from(0x0A), Ok(Device::Pc));
         assert_eq!(Device::try_from(0x0C), Ok(Device::Esc));
         assert_eq!(DevName(0x0A).to_string(), "PC[0]");
+        // 0x12 pushes the vision command set (0x0a) to App[0] on the RC link.
+        assert_eq!(Device::try_from(0x12), Ok(Device::Binocular));
+        assert_eq!(DevName(0x12).to_string(), "Binocular[0]");
+        assert_eq!(DevName(0x13).to_string(), "type0x13[0]");
+        for v in 0..DEVICE_NAMES.len() as u8 {
+            assert_eq!(Device::try_from(v).map(|d| d as u8), Ok(v));
+        }
     }
 }

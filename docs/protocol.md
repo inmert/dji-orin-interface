@@ -101,8 +101,21 @@ A frame captured from DJI Pilot:
 | 0x0a| PC (USB API port / ttyACM0) |
 | 0x0b| Battery        |
 | 0x0c| ESC            |
+| 0x0d| DM36x video, ground side |
+| 0x0e| HD link, ground side |
+| 0x0f| USB controller, air side |
+| 0x10| USB controller, ground side |
+| 0x11| Monocular vision |
+| 0x12| Binocular vision (stereo obstacle sensing) |
 
-Higher types seen in captures (e.g. `0x0e`, `0x1f`) are not all identified.
+0x0d–0x12 are named after dji-firmware-tools' dissector. Of these only 0x12 is
+busy on this aircraft: `Binocular[0]` → `App[0]` on the RC link, all on the
+vision command set `0x0a` (dissector names): `0a/06` avoidance parameters
+(7 B), `0a/07` obstacle info (14 B), `0a/19` flat check (4 B), `0a/2e`
+function list push (17 B), `0a/2f` sensor status push (13 B), `0a/42` (26 B,
+not in the dissector), plus the general `00/f1` component self-test state
+(4 B). About 35k frames in a 460 MB RC capture; payloads not decoded further.
+Higher types seen in captures (e.g. `0x1f`) are not all identified.
 
 The index (high 3 bits) tells the payloads apart on this aircraft: `Camera[0]`
 is the Zenmuse XT2's visual camera and `Camera[1]` its thermal core (both on
