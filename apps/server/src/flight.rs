@@ -6,8 +6,11 @@
 //! * [`Usb`] — the DUML reports on the USB API port (a `ttyACM`).
 //!
 //! Receive-only by construction: ports are opened `O_RDONLY` ([`RxPort`]), so
-//! nothing here can send anything to the aircraft. A missing or unplugged port
-//! is retried every few seconds, choosing the port again each time.
+//! nothing here can send anything to the aircraft. ACKs read here (OpenProtocol
+//! on the SDK UART, the FC's USB-flight ACK on the USB port) go to
+//! [`crate::motors`], which sends its requests on handles of its own. A missing
+//! or unplugged port is retried every few seconds, choosing the port again each
+//! time.
 
 use std::io::ErrorKind;
 use std::thread::sleep;
@@ -43,7 +46,10 @@ impl Link for Osdk {
     }
     fn feed(&mut self, bytes: &[u8], t: &mut Telemetry) {
         self.0.push(bytes);
-        self.0.drain(|f| t.flight.update(f));
+        self.0.drain(|f| {
+            crate::motors::deliver_ack(f);
+            t.flight.update(f);
+        });
     }
 }
 
@@ -58,6 +64,7 @@ impl Link for Usb {
     fn feed(&mut self, bytes: &[u8], t: &mut Telemetry) {
         self.0.push(bytes);
         self.0.drain(|f| {
+            crate::motors::deliver_duml_ack(f);
             if f.crc_ok {
                 t.usb.update(f);
             }

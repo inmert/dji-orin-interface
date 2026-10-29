@@ -714,6 +714,25 @@ input[type="range"] {
   gap: 12px;
   max-width: 1400px;
 }
+.motors-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.motors-state {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-right: auto;
+  min-width: 0;
+}
+.error-text {
+  color: #ff8a83;
+}
 .flight-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -937,6 +956,12 @@ td:nth-child(n + 3) {
   .toolbar .tool {
     flex: 1;
     justify-content: center;
+  }
+  .motors-bar {
+    flex-wrap: wrap;
+  }
+  .motors-state {
+    width: 100%;
   }
   .frame {
     grid-template-columns: 1fr;

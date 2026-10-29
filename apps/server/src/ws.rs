@@ -28,6 +28,8 @@ struct Snapshot<'a> {
     video: BTreeMap<&'static str, VideoStatus>,
     /// Whether the thermal auto range is on (server-authoritative).
     thermal_auto: bool,
+    /// Motor start/stop progress ([`crate::motors`]).
+    motors: crate::motors::Status,
 }
 
 /// Accept WebSocket clients forever, one thread each.
@@ -77,9 +79,9 @@ fn client(stream: TcpStream, cmds: Shared, tele: Tele, feeds: Arc<Feeds>) {
     let interval = Duration::from_millis(100);
     loop {
         if last_send.elapsed() >= interval {
-            let (linked, thermal_auto) = {
+            let (linked, thermal_auto, motors) = {
                 let c = cmds.lock().unwrap();
-                (c.linked, c.thermal_auto)
+                (c.linked, c.thermal_auto, c.motors.clone())
             };
             let video = video::statuses(&feeds);
             let t = tele.lock().unwrap().clone();
@@ -89,6 +91,7 @@ fn client(stream: TcpStream, cmds: Shared, tele: Tele, feeds: Arc<Feeds>) {
                     linked,
                     video,
                     thermal_auto,
+                    motors,
                 })
                 .unwrap_or_else(|_| "{}".into())
             };

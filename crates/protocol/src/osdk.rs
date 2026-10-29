@@ -1,7 +1,7 @@
 //! DJI Onboard SDK "OpenProtocol" (0xAA) framing, as spoken on the aircraft's
 //! OSDK UART. A different wire format from DUML: own SOF, CRCs and command
-//! numbering. We only *receive* on it (the M210 V1 never acks commands there),
-//! so this module decodes and never builds frames.
+//! numbering. Mostly we receive on it; [`command`] builds the few commands the
+//! server sends (activation, control authority, motor start/stop).
 //!
 //! Frame layout (little-endian multi-byte fields):
 //!
@@ -20,12 +20,17 @@
 //! ..   4     CRC-32 over bytes [0 .. length-4]  (whole-frame check)
 //! ```
 //!
+//! An ACK (bit 5 of byte 3 set) has no command set/id: its data starts at
+//! byte 12, and it answers the request with the same session and sequence.
+//!
 //! Both CRCs are reflected and seeded `0x3AA3`: CRC-16 poly `0xA001`, CRC-32
 //! poly `0xEDB88320` (values from the Onboard SDK source).
 //!
 //! * [`broadcast`] — the flight-data push (`0x02/0x00`) the FC sends unasked.
+//! * [`command`] — requests we send, and their ACK codes.
 
 pub mod broadcast;
+pub mod command;
 
 pub const SOF: u8 = 0xAA;
 pub const HEADER_LEN: usize = 12;
@@ -65,7 +70,8 @@ pub fn crc32(data: &[u8]) -> u32 {
     c
 }
 
-/// A CRC-valid OpenProtocol frame, borrowing its payload.
+/// A CRC-valid OpenProtocol frame, borrowing its payload. For an ACK,
+/// `cmd_set`/`cmd_id` are 0 and `payload` is the ACK data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frame<'a> {
     pub session: u8,
@@ -103,7 +109,8 @@ pub fn parse(buf: &[u8]) -> Result<(Frame<'_>, usize), ParseError> {
         return Err(ParseError::BadHeaderCrc);
     }
     let len = usize::from(u16::from_le_bytes([buf[1], buf[2]]) & 0x3FF);
-    if len < OVERHEAD {
+    let ack = buf[3] & 0x20 != 0;
+    if len < if ack { HEADER_LEN + 4 } else { OVERHEAD } {
         return Err(ParseError::BadLength);
     }
     let Some(frame) = buf.get(..len) else {
@@ -113,15 +120,20 @@ pub fn parse(buf: &[u8]) -> Result<(Frame<'_>, usize), ParseError> {
     if crc32(body) != u32::from_le_bytes([crc[0], crc[1], crc[2], crc[3]]) {
         return Err(ParseError::BadCrc);
     }
+    let (cmd_set, cmd_id, payload) = if ack {
+        (0, 0, &body[HEADER_LEN..])
+    } else {
+        (buf[12], buf[13], &body[14..])
+    };
     Ok((
         Frame {
             session: buf[3] & 0x1F,
-            ack: buf[3] & 0x20 != 0,
+            ack,
             enc: buf[4] & 0x07,
             seq: u16::from_le_bytes([buf[8], buf[9]]),
-            cmd_set: buf[12],
-            cmd_id: buf[13],
-            payload: &body[14..],
+            cmd_set,
+            cmd_id,
+            payload,
         },
         len,
     ))
@@ -172,7 +184,7 @@ impl Decoder {
 mod tests {
     use super::*;
 
-    /// Build a frame the way the FC does (test-only; we never transmit).
+    /// Build a frame the way the FC does.
     pub(crate) fn frame(cmd_set: u8, cmd_id: u8, payload: &[u8]) -> Vec<u8> {
         let len = OVERHEAD + payload.len();
         let mut f = vec![SOF, len as u8, (len >> 8) as u8 | 0x04, 0, 0, 0, 0, 0, 7, 0];
@@ -190,6 +202,21 @@ mod tests {
         assert_eq!(n, bytes.len());
         assert_eq!((f.cmd_set, f.cmd_id, f.seq, f.enc), (0x02, 0x00, 7, 0));
         assert_eq!(f.payload, &[1, 0, 9, 9]);
+    }
+
+    #[test]
+    fn parses_an_ack_without_set_or_id() {
+        // An ACK of one code byte: header, data, CRC-32.
+        let len = HEADER_LEN + 1 + 4;
+        let mut f = vec![SOF, len as u8, 0, 0x22, 0, 0, 0, 0, 0x34, 0x12];
+        f.extend_from_slice(&crc16(&f).to_le_bytes());
+        f.push(0x02);
+        f.extend_from_slice(&crc32(&f).to_le_bytes());
+        let (a, n) = parse(&f).unwrap();
+        assert_eq!(n, len);
+        assert!(a.ack);
+        assert_eq!((a.session, a.seq, a.cmd_set, a.cmd_id), (2, 0x1234, 0, 0));
+        assert_eq!(a.payload, &[0x02]);
     }
 
     #[test]

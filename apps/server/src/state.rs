@@ -30,6 +30,10 @@ pub struct Commands {
     thermal_in_flight: usize,
     /// Keep the isotherm band fitted to the scene ([`crate::thermal_auto`]).
     pub thermal_auto: bool,
+    /// A request for [`crate::motors`], carried out once.
+    pub motors_pending: Option<crate::motors::Request>,
+    /// Progress and outcome of motor requests, for the UI.
+    pub motors: crate::motors::Status,
 }
 
 /// A thermal camera setting from the UI (see [`dji_protocol::thermal`]).
@@ -184,6 +188,11 @@ pub enum WsCommand {
     /// Fit the isotherm band to the scene automatically, or stop doing so.
     #[serde(rename = "thermal_auto")]
     ThermalAuto { on: bool },
+    /// Start (`on`) or stop all motors over the OSDK UART.
+    Motors { on: bool },
+    /// Allow arming while the aircraft's USB API port is connected.
+    #[serde(rename = "usb_flight")]
+    UsbFlight,
 }
 
 /// Parse one UI message and apply it to the shared state. `thermal` is the
@@ -285,6 +294,25 @@ pub fn handle(text: &str, cmds: &Shared, thermal: Option<&Report>) {
         Ok(WsCommand::ThermalAuto { on }) => {
             cmds.lock().unwrap().thermal_auto = on;
             logln!("thermal: auto range {}", if on { "on" } else { "off" });
+        }
+        Ok(WsCommand::Motors { on }) => {
+            use crate::motors::Request;
+            let mut c = cmds.lock().unwrap();
+            // A stop replaces anything waiting; nothing replaces a waiting stop.
+            if on && c.motors_pending == Some(Request::Stop) {
+                return logln!("ws: motors: start ignored, stop pending");
+            }
+            c.motors_pending = Some(if on { Request::Start } else { Request::Stop });
+            logln!("ws: motors {} queued", if on { "start" } else { "stop" });
+        }
+        Ok(WsCommand::UsbFlight) => {
+            use crate::motors::Request;
+            let mut c = cmds.lock().unwrap();
+            if c.motors_pending.is_some() {
+                return logln!("ws: usb_flight ignored, a motor request is pending");
+            }
+            c.motors_pending = Some(Request::UsbFlight);
+            logln!("ws: usb_flight queued");
         }
         Err(e) => logln!("ws: bad command: {e}"),
     }
@@ -562,5 +590,17 @@ mod tests {
                 ThermalCmd::Spot(0.5, 0.6)
             ]
         );
+    }
+
+    #[test]
+    fn a_pending_motor_stop_is_never_replaced_by_a_start() {
+        let cmds: Shared = Arc::new(Mutex::new(Commands::default()));
+        handle_t(r#"{"cmd":"motors","on":true}"#, &cmds);
+        use crate::motors::Request;
+        assert_eq!(cmds.lock().unwrap().motors_pending, Some(Request::Start));
+        handle_t(r#"{"cmd":"motors","on":false}"#, &cmds);
+        handle_t(r#"{"cmd":"motors","on":true}"#, &cmds);
+        handle_t(r#"{"cmd":"usb_flight"}"#, &cmds);
+        assert_eq!(cmds.lock().unwrap().motors_pending, Some(Request::Stop));
     }
 }

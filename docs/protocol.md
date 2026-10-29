@@ -378,6 +378,25 @@ The ids are only in the prebuilt `libdji-linker.a`
 The setting does not survive an aircraft restart (user-checked 2026-10-28), so it
 has to be sent again, with authority, after every boot.
 
+**From the portal (2026-10-28, verified with props off).** The server speaks
+this OpenProtocol itself (`osdk::command`, `apps/server/src/motors.rs`), all
+unencrypted on session 2, ACKs matched by sequence number (an ACK frame has no
+set/id; its data starts at byte 12):
+
+| Step | Set/id | Payload | ACK |
+|------|--------|---------|-----|
+| version | `0x00/0x00` | `00` | code, NUL-terminated id, `SDK-v1.1 BETA PM410-03.03.10.18` |
+| activate | `0x00/0x01` | u32 app id, u32 `2`, u32 firmware (`0x03030A12`), 32 × `'0'` | `0` = success |
+| obtain authority | `0x01/0x00` | `01` | `2` = obtained, `3` = in progress (ask again) |
+| motors | `0x01/0x01` | `07` start / `08` stop | `0` = done |
+| release authority | `0x01/0x00` | `00` | `1` = released, `4` = in progress (ask again) |
+
+No key is sent: it only matters for encrypted frames. Activation worked
+offline every time after the one online activation. The motors keep idling
+after authority goes back to the RC, and stop on the stop command (FC status
+On ground → Stopped within a second). The UI's **Allow with USB** runs the
+same steps with `0x03/0x1b` on the USB port in place of the motor command.
+
 ## OSDK flight-data broadcast (UART)
 
 The aircraft's OSDK UART speaks DJI's Onboard SDK **OpenProtocol**, not DUML:

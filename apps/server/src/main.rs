@@ -31,6 +31,8 @@
 //! its rate (default 230400). `USB_ACM` picks the aircraft's USB API serial
 //! port (default: the first `ttyACM` that is not the CrystalSky; `off`
 //! disables it). Defaults are chosen again on every reopen ([`ports`]).
+//! `OSDK_APP_ID` is the Onboard SDK app the UI's motor start/stop activates
+//! (unset disables those buttons' commands; see [`motors`]).
 //! `FPV_UDT` is the FPV camera's UDT address (default `192.168.42.2:40003`;
 //! `off` disables that feed). `RC_VIDEO` maps the gimbal-camera feeds to RC
 //! mux channels (default `cam1=0x11,cam2=0x15`; `off` disables them; adding
@@ -40,6 +42,7 @@
 mod flight;
 mod http;
 mod injector;
+mod motors;
 mod ports;
 mod reader;
 mod state;
@@ -162,6 +165,19 @@ fn main() {
     {
         let (tele, cmds) = (Arc::clone(&tele), Arc::clone(&cmds));
         std::thread::spawn(move || thermal_auto::run(tele, cmds));
+    }
+
+    // Motor start/stop (sends on the SDK UART only when the UI asks).
+    {
+        let app_id = std::env::var("OSDK_APP_ID").ok().map(|v| {
+            v.parse::<u32>()
+                .unwrap_or_else(|e| die(&format!("OSDK_APP_ID={v}: {e}")))
+        });
+        if app_id.is_none() {
+            logln!("motors: OSDK_APP_ID not set; motor commands disabled");
+        }
+        let (cmds, tele) = (Arc::clone(&cmds), Arc::clone(&tele));
+        std::thread::spawn(move || motors::run(cmds, tele, app_id));
     }
 
     // Direct aircraft ports: receive-only, independent of the RC link. An env

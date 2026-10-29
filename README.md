@@ -239,7 +239,7 @@ within seconds. Two ways it fails silently (the log stops at `gadget: BIND`):
 (230400 baud) and shows its flight-data broadcast in
 the UI's *Flight telemetry* panel: status and flight mode, attitude, altitude,
 velocity, GPS, battery, obstacle distances, RC sticks, gimbal and compass. The
-port is opened read-only, so nothing can be sent to the aircraft on it. It runs
+reader opens the port read-only; only the motor buttons below send on it. It runs
 independently of the RC link, so it works with the RC unplugged too. By
 default it reads a CP210x USB-TTL adapter when one is plugged in (the path that
 works both ways, see [docs/hardware.md](docs/hardware.md)), else the Orin's own
@@ -250,6 +250,22 @@ them after:
 
 ```bash
 sudo OSDK_UART=/dev/ttyTHS1 scripts/run_server.sh
+```
+
+**Motors.** The *Flight telemetry* page has **Start motors** (asks for
+confirmation) and **Stop motors**; they start and stop all four motors
+together. Each press activates the Onboard SDK app given by `OSDK_APP_ID`
+(an app activated once with DJI Assistant 2 online), takes SDK control
+authority over the UART, sends the command and hands authority back to the
+RC; the panel shows the FC's answer. The RC must be in P mode. While the
+aircraft's USB API port is connected the FC refuses to arm until
+**Allow with USB** has been pressed once since the aircraft last started (it
+sends `0x03/0x1b` on that port under the same authority). Without
+`OSDK_APP_ID` the buttons only report that it is missing. **Props off** unless
+you mean to fly:
+
+```bash
+sudo OSDK_APP_ID=<app id> scripts/run_server.sh
 ```
 
 **Direct USB link.** The server likewise reads the aircraft's USB API port

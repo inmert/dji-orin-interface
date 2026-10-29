@@ -1,11 +1,12 @@
-//! Raw serial ports (the aircraft's OSDK UART), opened **receive-only**.
+//! Raw serial ports (the aircraft's OSDK UART).
 //!
-//! The port is opened `O_RDONLY`, so nothing written here can ever reach the
-//! aircraft: the type has no write path at all. Line settings are raw 8N1, no
-//! flow control, at one of the standard rates.
+//! [`RxPort`] is opened `O_RDONLY`, so nothing can ever be written through it:
+//! the type has no write path at all. Line settings are raw 8N1, no flow
+//! control, at one of the standard rates. Sending is a separate, explicit
+//! [`TxPort`] on the same device, opened only to send a command.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -144,6 +145,29 @@ impl RxPort {
         // SAFETY: `p` is one valid pollfd; a zero timeout never blocks.
         let ready = unsafe { c::poll(&raw mut p, 1, 0) };
         ready > 0 && p.revents & (c::POLLHUP | c::POLLERR | c::POLLNVAL) != 0
+    }
+}
+
+/// A serial port open for writing only. It relies on an [`RxPort`] on the
+/// same device having set the line up, and reads nothing itself (ACKs come
+/// back through that reader).
+pub struct TxPort {
+    file: File,
+}
+
+impl TxPort {
+    pub fn open(path: impl AsRef<Path>) -> io::Result<TxPort> {
+        let file = OpenOptions::new()
+            .write(true)
+            .custom_flags(c::O_NOCTTY)
+            .open(path)?;
+        Ok(TxPort { file })
+    }
+
+    /// Write one whole frame.
+    pub fn send(&mut self, frame: &[u8]) -> io::Result<()> {
+        self.file.write_all(frame)?;
+        self.file.flush()
     }
 }
 

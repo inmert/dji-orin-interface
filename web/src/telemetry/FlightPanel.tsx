@@ -1,4 +1,4 @@
-import { FlightData, FlightLink, NO_PORT } from "../api";
+import { Command, FlightData, FlightLink, MotorStatus, NO_PORT } from "../api";
 import { Row, Tile, deg, fixed, useAdvancing } from "./Tile";
 
 const pad2 = (n: number) => n.toString().padStart(2, "0");
@@ -102,8 +102,53 @@ function Tiles({ d }: { d: FlightData }) {
   );
 }
 
-/** Flight data from the aircraft's OSDK UART broadcast (receive-only). */
-export function FlightPanel({ flight, connected }: { flight: FlightLink | undefined; connected: boolean }) {
+/** Start/stop all motors over the OSDK UART. Starting asks for confirmation. */
+function Motors({ flight, motors, enabled, send }: {
+  flight: FlightLink | undefined;
+  motors: MotorStatus | undefined;
+  enabled: boolean;
+  send: (c: Command) => void;
+}) {
+  const s = flight?.frames ? flight.data.status : null;
+  const busy = !!motors?.busy;
+  const start = () => {
+    if (window.confirm("Start all motors? Props off, people clear.")) send({ cmd: "motors", on: true });
+  };
+  const result = motors?.message
+    ? `${motors.ok === false ? "Failed: " : ""}${motors.message}`
+    : "No motor command sent yet.";
+  return (
+    <div className="motors-bar" aria-label="Motors">
+      <div className="motors-state">
+        <span className="metric-label">MOTORS</span>
+        <strong>{s ? s.flight_name : "—"}</strong>
+        <span className={`muted${motors?.ok === false ? " error-text" : ""}`} role="status">{result}</span>
+      </div>
+      <button
+        className="tool"
+        disabled={!enabled || busy}
+        onClick={() => send({ cmd: "usb_flight" })}
+        title="The FC refuses to arm while its USB API port is connected; this lifts that until the aircraft restarts"
+      >
+        Allow with USB
+      </button>
+      <button className="tool" disabled={!enabled || busy} onClick={start}>
+        Start motors
+      </button>
+      <button className="tool danger" disabled={!enabled || busy} onClick={() => send({ cmd: "motors", on: false })}>
+        Stop motors
+      </button>
+    </div>
+  );
+}
+
+/** Flight data from the aircraft's OSDK UART broadcast, and motor start/stop. */
+export function FlightPanel({ flight, motors, connected, send }: {
+  flight: FlightLink | undefined;
+  motors?: MotorStatus;
+  connected: boolean;
+  send: (c: Command) => void;
+}) {
   const live = useAdvancing(flight?.frames);
   const fresh = connected && live;
 
@@ -119,11 +164,12 @@ export function FlightPanel({ flight, connected }: { flight: FlightLink | undefi
     <section className="page" aria-labelledby="flight-heading">
       <header className="view-head">
         <h1 id="flight-heading">Flight telemetry</h1>
-        <span className="muted">OSDK UART · read-only · {note}</span>
+        <span className="muted">OSDK UART · {note}</span>
         <span className={`tag${fresh ? " ready" : ""}`}>
           {fresh ? "Receiving" : flight && flight.frames > 0 ? "Stale" : "Waiting"}
         </span>
       </header>
+      {motors && <Motors flight={flight} motors={motors} enabled={connected && !!flight?.open} send={send} />}
       {flight && flight.frames > 0 ? (
         <div className={fresh ? "" : "flight-stale"}>
           <Tiles d={flight.data} />

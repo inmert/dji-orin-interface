@@ -142,6 +142,17 @@ export interface Telemetry {
   thermal_auto?: boolean;
   /** Camera video feeds by name (`cam1`, `cam2`, `fpv`); absent from older servers. */
   video?: Record<string, VideoStatus>;
+  /** Motor start/stop progress; absent from older servers. */
+  motors?: MotorStatus;
+}
+
+/** Motor start/stop progress (Status in apps/server/src/motors.rs). */
+export interface MotorStatus {
+  busy: boolean;
+  /** The last request. */
+  last: "start" | "stop" | "usb_flight" | null;
+  ok: boolean | null;
+  message: string;
 }
 
 // --- Commands (mirror WsCommand in apps/server/src/state.rs) ---
@@ -159,6 +170,10 @@ export type Command =
   | { cmd: "isotherm"; lower: number; middle: number; upper: number }
   /** Keep the isotherm band fitted to the scene (full-frame area measurement). */
   | { cmd: "thermal_auto"; on: boolean }
+  /** Start (on) or stop all motors over the OSDK UART. */
+  | { cmd: "motors"; on: boolean }
+  /** Allow arming with the aircraft's USB API port connected (until restart). */
+  | { cmd: "usb_flight" }
   | { cmd: "stop" };
 
 export type Status = "connecting" | "open" | "closed";
@@ -249,6 +264,14 @@ export const NO_PORT = "no port found";
 export const videoUrl = (feed: string) =>
   `/video/${encodeURIComponent(feed)}.mjpg`;
 
+const bool = (value: unknown): value is boolean => typeof value === "boolean";
+
+export function isMotorStatus(value: unknown): value is MotorStatus {
+  return record(value) && bool(value.busy) && typeof value.message === "string"
+    && optional(value.last, v => v === "start" || v === "stop" || v === "usb_flight")
+    && optional(value.ok, bool);
+}
+
 // JSON parsing alone does not validate a snapshot. Reject the whole message
 // before it changes freshness or reaches components that dereference its rows.
 export function isTelemetry(value: unknown): value is Telemetry {
@@ -258,7 +281,8 @@ export function isTelemetry(value: unknown): value is Telemetry {
     || (value.usb !== undefined && !isUsbLink(value.usb))
     || !optional(value.video, v => record(v) && Object.values(v).every(isVideoStatus))
     || !optional(value.thermal, isThermalReport)
-    || !optional(value.thermal_auto, v => typeof v === "boolean")) return false;
+    || !optional(value.thermal_auto, v => typeof v === "boolean")
+    || !optional(value.motors, isMotorStatus)) return false;
   return Object.values(value.gimbals).every(isGimbal)
     && Object.values(value.streams).every(s => record(s)
       && typeof s.from === "string" && typeof s.to === "string"

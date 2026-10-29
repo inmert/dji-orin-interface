@@ -117,6 +117,9 @@ const malformed = [
   { ...good, usb: { ...usbLink, gimbals: { 0: { index: 0, pitch: 0 } } } },
   { ...good, usb: { ...usbLink, osd: { ...usbOsd, yaw: '143' } } },
   { ...good, usb: { ...usbLink, osd: { ...usbOsd, unverified: { latitude: 0, longitude: 0, height: 0 } } } },
+  { ...good, motors: { busy: 'no', last: null, ok: null, message: '' } },
+  { ...good, motors: { busy: false, last: true, ok: null, message: '' } },
+  { ...good, motors: { busy: false, last: null, ok: null } },
 ];
 now += 2500;
 tick();
@@ -132,6 +135,7 @@ sockets[1].onmessage({ data: JSON.stringify({ ...good,
     status: { flight: 0, flight_name: 'Stopped', mode: 6, mode_name: 'P-GPS', gear: 1, gear_name: 'Down', error: 200 },
     mag: [101, 582, 1366] }),
   usb: { ...usbLink, gimbals: { 0: { index: 0, pitch: 0, roll: 0, yaw: 1425, raw: '', provisional: true } } },
+  motors: { busy: false, last: 'start', ok: false, message: 'FC refused' },
 }) });
 assert.equal(h.states[1].value.frames, 3, 'valid populated telemetry still accepted');
 assert.equal(h.states[2].value, false);

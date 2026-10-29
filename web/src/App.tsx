@@ -126,7 +126,7 @@ export function App() {
               </div>
             </>
           )}
-          {view === "flight" && <FlightPanel flight={telemetry.flight} connected={status === "open"} />}
+          {view === "flight" && <FlightPanel flight={telemetry.flight} motors={telemetry.motors} connected={status === "open"} send={send} />}
           {view === "usb" && <UsbPanel usb={telemetry.usb} connected={status === "open"} />}
           {view === "streams" && <StreamsTable telemetry={telemetry} stale={!ready} />}
         </main>
