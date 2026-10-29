@@ -375,7 +375,8 @@ The ids are only in the prebuilt `libdji-linker.a`
   error field stays 0 with USB plugged in, and the RC stick combination starts
   and stops the motors. Authority was released (`0x01/0x00` `00`) right after.
 
-Whether the setting survives an aircraft restart is untested.
+The setting does not survive an aircraft restart (user-checked 2026-10-28), so it
+has to be sent again, with authority, after every boot.
 
 ## OSDK flight-data broadcast (UART)
 
