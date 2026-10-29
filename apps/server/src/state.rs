@@ -33,10 +33,15 @@ pub struct Commands {
     /// Motor start (`true`) / stop over the RC link, sent once
     /// by the injector as `0x03/0x2a`.
     pub rc_motor_pending: Option<bool>,
+    /// The sequence number the injector sent the last RC-link motor frame
+    /// with, for [`crate::motors`] to match the FC's ACK.
+    pub rc_motor_sent: Option<u16>,
     /// A request for [`crate::motors`], carried out once.
     pub motors_pending: Option<crate::motors::Request>,
-    /// Progress and outcome of motor requests, for the UI.
+    /// Progress and outcome of motor requests, and the live motor state.
     pub motors: crate::motors::Status,
+    /// "Allow with USB" succeeded during the current USB session.
+    pub usb_allowed: bool,
 }
 
 /// A thermal camera setting from the UI (see [`dji_protocol::thermal`]).

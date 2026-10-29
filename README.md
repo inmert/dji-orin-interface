@@ -254,15 +254,17 @@ sudo OSDK_UART=/dev/ttyTHS1 scripts/run_server.sh
 
 **Motors.** The *Flight telemetry* page has **Start motors** (asks for
 confirmation) and **Stop motors**; they start and stop all four motors
-together. Each press activates the Onboard SDK app given by `OSDK_APP_ID`
-(an app activated once with DJI Assistant 2 online), takes SDK control
-authority over the UART, sends the command and hands authority back to the
-RC; the panel shows the FC's answer. The RC must be in P mode. While the
-aircraft's USB API port is connected the FC refuses to arm until
+together. With the RC link up they go over it as the DJI app would (DUML
+`0x03/0x2a`, no activation needed), so neither the UART nor the USB cable is
+required. Without the RC link, or if the FC does not answer there, the server
+falls back to the OSDK UART: it activates the Onboard SDK app given by
+`OSDK_APP_ID` (an app activated once with DJI Assistant 2 online), takes SDK
+control authority, sends the command and hands authority back to the RC. The
+panel shows the FC's answer and which path was used. The RC must be in P mode.
+While the aircraft's USB API port is connected the FC refuses to arm until
 **Allow with USB** has been pressed once since the aircraft last started (it
-sends `0x03/0x1b` on that port under the same authority). Without
-`OSDK_APP_ID` the buttons only report that it is missing. **Props off** unless
-you mean to fly:
+sends `0x03/0x1b` on that port under authority taken over the UART). **Props
+off** unless you mean to fly:
 
 ```bash
 sudo OSDK_APP_ID=<app id> scripts/run_server.sh

@@ -20,6 +20,18 @@ use crate::duml::{self, Device};
 pub const CMD_SET: u8 = 0x03;
 /// General ("OSD") data report.
 pub const CMD_ID_OSD: u8 = 0x43;
+/// "FlyC Power Param" push (dji-firmware-tools), FC → app ~10 Hz on the RC
+/// link: four f32, the first the average motor speed in rpm (0 with motors
+/// off, ~1540 at idle, ~2030 spinning up; verified 2026-10-28).
+pub const CMD_ID_POWER: u8 = 0x67;
+
+/// Average motor speed (rpm) from a `0x03/0x67` payload.
+pub fn motor_rpm(payload: &[u8]) -> Option<f32> {
+    let b: [u8; 4] = payload.get(..4)?.try_into().ok()?;
+    let v = f32::from_le_bytes(b);
+    v.is_finite().then_some(v)
+}
+
 /// "Function Control" (dji-firmware-tools): one command byte for the FC.
 pub const CMD_ID_FUNCTION_CONTROL: u8 = 0x2A;
 /// Command codes, as in the FC's own "latest app command" list in `0x03/0x43`
@@ -64,6 +76,16 @@ pub fn usb_flight_frame(seq: u16, allow: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_motor_rpm() {
+        // Captured idle push: 1536.25 rpm, 0.071, 0, 99.86.
+        let p = [
+            0x00, 0x08, 0xc0, 0x44, 0x91, 0x6a, 0x91, 0x3d, 0, 0, 0, 0, 0x5c, 0xb8, 0xc7, 0x42,
+        ];
+        assert_eq!(motor_rpm(&p), Some(1536.25));
+        assert_eq!(motor_rpm(&p[..3]), None);
+    }
 
     #[test]
     fn function_control_frame_routes_app_to_fc() {

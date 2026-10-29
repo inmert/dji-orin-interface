@@ -102,50 +102,77 @@ function Tiles({ d }: { d: FlightData }) {
   );
 }
 
-/** Start/stop all motors over the OSDK UART. Starting asks for confirmation. */
-function Motors({ flight, motors, enabled, send }: {
-  flight: FlightLink | undefined;
-  motors: MotorStatus | undefined;
+/** Start/stop all motors (over the RC link when it is up, else the OSDK
+ * UART). Starting asks for confirmation. */
+const USB_FLIGHT: Record<string, string> = {
+  allowed: "On",
+  locked: "Off",
+  no_usb: "No USB",
+  unknown: "?",
+};
+
+function Motors({ motors, enabled, uartOpen, send }: {
+  motors: MotorStatus;
+  /** The server can send start/stop on some path. */
   enabled: boolean;
+  /** Allow with USB needs the UART (it takes control authority there). */
+  uartOpen: boolean;
   send: (c: Command) => void;
 }) {
-  const s = flight?.frames ? flight.data.status : null;
-  const busy = !!motors?.busy;
+  const busy = motors.busy;
+  const armed = motors.armed ?? null;
+  const usb = motors.usb_flight ?? "unknown";
   const start = () => {
     if (window.confirm("Start all motors? Props off, people clear.")) send({ cmd: "motors", on: true });
   };
-  const result = motors?.message
+  const result = motors.message
     ? `${motors.ok === false ? "Failed: " : ""}${motors.message}`
     : "No motor command sent yet.";
   return (
     <div className="motors-bar" aria-label="Motors">
       <div className="motors-state">
         <span className="metric-label">MOTORS</span>
-        <strong>{s ? s.flight_name : "—"}</strong>
-        <span className={`muted${motors?.ok === false ? " error-text" : ""}`} role="status">{result}</span>
+        <strong className={armed ? "armed-text" : undefined}>
+          {armed === null ? "Unknown" : armed ? "Armed" : "Disarmed"}
+          {motors.armed_from && <span className="muted"> · {motors.armed_from}</span>}
+        </strong>
+        <span className={`muted${motors.ok === false ? " error-text" : ""}`} role="status">{result}</span>
       </div>
       <button
-        className="tool"
-        disabled={!enabled || busy}
+        className={`tool${usb === "allowed" ? " on" : ""}`}
+        aria-pressed={usb === "allowed"}
+        disabled={!enabled || !uartOpen || busy || usb === "no_usb" || usb === "allowed"}
         onClick={() => send({ cmd: "usb_flight" })}
         title="The FC refuses to arm while its USB API port is connected; this lifts that until the aircraft restarts"
       >
-        Allow with USB
+        USB flight: {USB_FLIGHT[usb] ?? usb}
       </button>
-      <button className="tool" disabled={!enabled || busy} onClick={start}>
-        Start motors
+      <button
+        className={`tool${armed ? " on" : ""}`}
+        aria-pressed={armed === true}
+        disabled={!enabled || busy}
+        onClick={start}
+      >
+        {armed ? "Armed" : "Arm"}
       </button>
-      <button className="tool danger" disabled={!enabled || busy} onClick={() => send({ cmd: "motors", on: false })}>
-        Stop motors
+      <button
+        className={`tool danger${armed === false ? " on" : ""}`}
+        aria-pressed={armed === false}
+        disabled={!enabled || busy}
+        onClick={() => send({ cmd: "motors", on: false })}
+      >
+        {armed === false ? "Disarmed" : "Disarm"}
       </button>
     </div>
   );
 }
 
 /** Flight data from the aircraft's OSDK UART broadcast, and motor start/stop. */
-export function FlightPanel({ flight, motors, connected, send }: {
+export function FlightPanel({ flight, motors, rcLink, connected, send }: {
   flight: FlightLink | undefined;
   motors?: MotorStatus;
+  /** The RC link (gadget) is up, so motor commands can go over it. */
+  rcLink: boolean;
   connected: boolean;
   send: (c: Command) => void;
 }) {
@@ -169,7 +196,14 @@ export function FlightPanel({ flight, motors, connected, send }: {
           {fresh ? "Receiving" : flight && flight.frames > 0 ? "Stale" : "Waiting"}
         </span>
       </header>
-      {motors && <Motors flight={flight} motors={motors} enabled={connected && !!flight?.open} send={send} />}
+      {motors && (
+        <Motors
+          motors={motors}
+          enabled={connected && (rcLink || !!flight?.open)}
+          uartOpen={!!flight?.open}
+          send={send}
+        />
+      )}
       {flight && flight.frames > 0 ? (
         <div className={fresh ? "" : "flight-stale"}>
           <Tiles d={flight.data} />

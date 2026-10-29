@@ -408,6 +408,13 @@ and back. DJI Pilot never sends it (it has no motor button). WS
 logs the ACK. Tested with the USB API port connected but already unlocked;
 with the USB lock active it is untested.
 
+The portal's **Arm**/**Disarm** buttons use this path whenever the RC link is
+up and fall back to the UART sequence when it is down or the FC stays silent.
+They show the live state: armed from the UART status (`flight` ≥ 1) or, without
+the UART, from the FC's `0x03/0x67` push on the RC link (first f32 = average
+motor rpm: 0 off, ~1500 idle); USB flight from the UART error field (200 seen
+in the last 10 s = locked) and the last **Allow with USB** in this USB session.
+
 ## OSDK flight-data broadcast (UART)
 
 The aircraft's OSDK UART speaks DJI's Onboard SDK **OpenProtocol**, not DUML:

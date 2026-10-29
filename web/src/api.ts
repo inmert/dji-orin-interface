@@ -153,6 +153,12 @@ export interface MotorStatus {
   last: "start" | "stop" | "usb_flight" | null;
   ok: boolean | null;
   message: string;
+  /** Motors running; null when neither the UART nor the RC link is live. */
+  armed?: boolean | null;
+  /** Where `armed` came from: "UART" or "RC link". */
+  armed_from?: string | null;
+  /** Arming with the USB API port connected: no_usb, locked, allowed or unknown. */
+  usb_flight?: string;
 }
 
 // --- Commands (mirror WsCommand in apps/server/src/state.rs) ---
@@ -269,7 +275,9 @@ const bool = (value: unknown): value is boolean => typeof value === "boolean";
 export function isMotorStatus(value: unknown): value is MotorStatus {
   return record(value) && bool(value.busy) && typeof value.message === "string"
     && optional(value.last, v => v === "start" || v === "stop" || v === "usb_flight")
-    && optional(value.ok, bool);
+    && optional(value.ok, bool) && optional(value.armed, bool)
+    && optional(value.armed_from, v => typeof v === "string")
+    && optional(value.usb_flight, v => typeof v === "string");
 }
 
 // JSON parsing alone does not validate a snapshot. Reject the whole message

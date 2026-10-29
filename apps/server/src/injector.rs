@@ -82,7 +82,10 @@ pub fn run(ep2: OwnedFd, cmds: Shared) {
             };
             let frame_seq = seq;
             match send(flyc::function_control_frame(code, seq), &mut seq) {
-                Sent::Ok => logln!("injector: RC-link function {code:#04x} sent (seq {frame_seq})"),
+                Sent::Ok => {
+                    cmds.lock().unwrap().rc_motor_sent = Some(frame_seq);
+                    logln!("injector: RC-link function {code:#04x} sent (seq {frame_seq})");
+                }
                 Sent::Retry => {
                     cmds.lock().unwrap().rc_motor_pending.get_or_insert(on);
                 }

@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::duml::{DevName, Frame};
+use crate::duml::{DevName, Device, Frame};
 use crate::flyc;
 use crate::gimbal;
 use crate::osdk::{self, broadcast};
@@ -48,6 +48,8 @@ pub struct Telemetry {
     pub usb: UsbLink,
     /// Latest report from the thermal camera (spot meter, display mode).
     pub thermal: Option<thermal::Report>,
+    /// Average motor speed (rpm) from the FC's `0x03/0x67` push on the RC link.
+    pub motor_rpm: Option<f32>,
 }
 
 /// The aircraft's USB API port (receive-only): the reports it pushes unasked.
@@ -134,6 +136,13 @@ impl Telemetry {
         }
         if let Some(r) = thermal::Report::decode(f) {
             self.thermal = Some(r);
+        }
+        if f.sender & 0x1F == Device::FlightCtrl as u8
+            && (f.cmd_set, f.cmd_id) == (flyc::CMD_SET, flyc::CMD_ID_POWER)
+        {
+            if let Some(rpm) = flyc::motor_rpm(f.payload) {
+                self.motor_rpm = Some(rpm);
+            }
         }
     }
 }

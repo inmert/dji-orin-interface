@@ -92,6 +92,7 @@ pub fn run(ep1: OwnedFd, tele: Tele, feeds: Vec<Arc<Feed>>) {
                 let mut t = tele.lock().unwrap();
                 let mut each = |f: &duml::Frame| {
                     if f.crc_ok {
+                        crate::motors::deliver_duml_ack(f);
                         t.update(f);
                         if f.cmd_set == flyc::CMD_SET && f.cmd_id == flyc::CMD_ID_FUNCTION_CONTROL {
                             logln!(

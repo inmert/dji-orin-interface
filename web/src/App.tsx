@@ -126,7 +126,7 @@ export function App() {
               </div>
             </>
           )}
-          {view === "flight" && <FlightPanel flight={telemetry.flight} motors={telemetry.motors} connected={status === "open"} send={send} />}
+          {view === "flight" && <FlightPanel flight={telemetry.flight} motors={telemetry.motors} rcLink={telemetry.link_up} connected={status === "open"} send={send} />}
           {view === "usb" && <UsbPanel usb={telemetry.usb} connected={status === "open"} />}
           {view === "streams" && <StreamsTable telemetry={telemetry} stale={!ready} />}
         </main>
@@ -141,7 +141,7 @@ export function App() {
         <span>UART {telemetry.flight?.frames.toLocaleString() ?? "—"}</span>
         <span>USB {telemetry.usb?.frames.toLocaleString() ?? "—"}</span>
         <span className="spacer" />
-        <span>Gimbal control only · flight data is read-only</span>
+        <span>Gimbals, cameras and motor start/stop · no flight control</span>
       </footer>
     </div>
   );

@@ -730,6 +730,14 @@ input[type="range"] {
   margin-right: auto;
   min-width: 0;
 }
+.armed-text {
+  color: var(--warn);
+}
+.tool.danger.on {
+  border-color: var(--line-strong);
+  background: var(--raised);
+  color: var(--text);
+}
 .error-text {
   color: #ff8a83;
 }
