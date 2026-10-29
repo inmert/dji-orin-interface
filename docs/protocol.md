@@ -459,6 +459,21 @@ FFmpeg 8 on the Orin has only the NVIDIA H.264 decoders (`h264_cuvid`,
 `h264_nvv4l2dec`), so the software decode path is GStreamer's `avdec_h264`
 or `openh264dec`.
 
+**Which streams the aircraft serves is not fixed (2026-10-28, later).** In one
+session the RC mux carried all three video channels (`0x11`, `0x13`, `0x15`)
+with nothing sent by us; with DJI Pilot bridged it carried `0x11` and `0x15`
+only; and in a later session, after the aircraft had been restarted and used
+with DJI GO 4, DJI Assistant 2 and a different app, it carried `0x11` only,
+UDT port `40003` connected but delivered nothing, and UDT port **`40001`** (the
+SDK's "main camera" port, untested until then) delivered the XT2's stream
+(Baseline 1280×720, ~27 fps, with IDR frames; the same picture as channel
+`0x11`). All cameras and gimbals kept reporting over DUML throughout. So the
+aircraft encodes a selectable set of streams, and some DJI app or RC setting
+chose a single-stream mode; which command selects it is not known yet (the
+DM36x `0x08/0x06` status read `01 01 02 00` in both the three-stream and the
+two-stream captures). `cargo run -p dji-udt --example udt_recv -- <ip:port>
+<secs> <file>` checks a UDT port in isolation.
+
 ## RC USB mux and camera video
 
 What the RC sends the app on its bulk stream (ep1 on our gadget) is not
