@@ -1,8 +1,8 @@
-//! WebSocket endpoint: telemetry snapshots down, UI commands up.
+//! The WebSocket (`/ws` on the HTTP listeners): telemetry snapshots down,
+//! UI commands up.
 
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
-use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -14,9 +14,9 @@ use dji_common::logln;
 use dji_protocol::Telemetry;
 use dji_vehicle::Vehicle;
 
+use crate::http::Conn;
 use crate::portal;
 use crate::video::{self, Feeds, VideoStatus};
-use crate::{WS_ADDR, die};
 
 /// What the server broadcasts to the UI: the telemetry snapshot plus the current
 /// link state, so a freshly-loaded or refreshed page reflects the real state.
@@ -77,31 +77,18 @@ fn check_origin(req: &Request, resp: Response) -> Result<Response, ErrorResponse
     Err(refused)
 }
 
-/// Accept WebSocket clients forever, one thread each.
-pub fn serve(vehicle: Arc<Vehicle>, feeds: Arc<Feeds>) {
-    let listener =
-        TcpListener::bind(WS_ADDR).unwrap_or_else(|e| die(&format!("ws: bind {WS_ADDR}: {e}")));
-    logln!("ws: listening on {WS_ADDR}");
-    for stream in listener.incoming().flatten() {
-        let vehicle = Arc::clone(&vehicle);
-        let feeds = Arc::clone(&feeds);
-        std::thread::spawn(move || client(stream, &vehicle, &feeds));
-    }
-}
-
-/// One WebSocket client: stream telemetry down, apply commands up. On any exit
-/// (disconnect, error) release every gimbal — a dead-man stop.
-fn client(stream: TcpStream, vehicle: &Arc<Vehicle>, feeds: &Feeds) {
-    let peer = stream
-        .peer_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_default();
+/// One WebSocket client on an accepted connection (its request head still
+/// unread, see [`crate::http::Replay`]): stream telemetry down, apply
+/// commands up. On any exit (disconnect, error) release every gimbal — a
+/// dead-man stop.
+pub fn client<C: Conn>(stream: C, peer: String, vehicle: &Arc<Vehicle>, feeds: &Feeds) {
     // Handshake with a generous timeout; the short poll timeout is set only
     // afterwards, or a client slower than 50 ms to send its upgrade request
     // fails the handshake with WouldBlock and is dropped.
     if let Err(e) = stream
+        .tcp()
         .set_read_timeout(Some(Duration::from_secs(5)))
-        .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(1))))
+        .and_then(|()| stream.tcp().set_write_timeout(Some(Duration::from_secs(1))))
     {
         logln!("ws: cannot set timeouts for {peer}: {e}");
         return;
@@ -115,6 +102,7 @@ fn client(stream: TcpStream, vehicle: &Arc<Vehicle>, feeds: &Feeds) {
     };
     let _ = ws
         .get_ref()
+        .tcp()
         .set_read_timeout(Some(Duration::from_millis(50)));
     logln!("ws: client {peer} connected");
     let mut last_send = Instant::now() - Duration::from_secs(1);

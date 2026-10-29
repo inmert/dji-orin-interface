@@ -9,6 +9,10 @@
 //!   `then disarm` is folded in, not doubled)
 //! * `disarm` / `stop motors` / `stop`
 //! * `wait 3 seconds` / `hold for 2 s` / `wait a minute`
+//! * `pan left 2 seconds` / `pan camera 2 right for 1 s` / `look up 3 s` /
+//!   `tilt down` (one second when no duration is given; camera 1 by default)
+//! * `recenter` / `recenter camera 2` / `recenter both`
+//! * `link cameras` / `unlink`
 //!
 //! Numbers may be digits (`5`, `2.5`) or words up to twenty; units are
 //! seconds (`s`, `sec`, `secs`, `second(s)`) or minutes (`m`, `min`,
@@ -16,7 +20,7 @@
 
 use std::fmt;
 
-use crate::{Command, Plan};
+use crate::{Command, Horizontal, Plan, Vertical};
 
 /// Why a sentence did not parse.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,46 +52,63 @@ pub fn parse(text: &str) -> Result<Plan, ParseError> {
     for clause in clauses(text) {
         any = true;
         let words: Vec<&str> = clause.split_whitespace().collect();
+        let unknown = || ParseError::UnknownClause(clause.clone());
+        let bad_duration = || ParseError::BadDuration(clause.clone());
+        let mut after_motor_wait = false;
         match words.as_slice() {
             ["arm"] | ["arm", "motors"] | ["start", "motors"] | ["spin", "up"] | ["start"] => {
                 steps.push(Command::Arm);
-                implicit_disarm = false;
             }
             ["arm", "for", rest @ ..]
             | ["arm", "motors", "for", rest @ ..]
             | ["start", "motors", "for", rest @ ..]
             | ["spin", "up", "for", rest @ ..]
             | ["spin", "for", rest @ ..] => {
-                let seconds =
-                    duration(rest).ok_or_else(|| ParseError::BadDuration(clause.clone()))?;
+                let seconds = duration(rest).ok_or_else(bad_duration)?;
                 steps.push(Command::Arm);
                 steps.push(Command::Wait { seconds });
                 steps.push(Command::Disarm);
-                implicit_disarm = true;
+                after_motor_wait = true;
             }
             ["disarm"]
             | ["disarm", "motors"]
             | ["stop"]
             | ["stop", "motors"]
             | ["spin", "down"] => {
-                if implicit_disarm {
-                    implicit_disarm = false; // already disarmed at the end of "arm for N"
-                } else {
+                if !implicit_disarm {
                     steps.push(Command::Disarm);
                 }
+                // else: already disarmed at the end of "arm for N"
             }
             ["wait", rest @ ..]
             | ["hold", rest @ ..]
             | ["pause", rest @ ..]
             | ["sleep", rest @ ..] => {
                 let rest = rest.strip_prefix(&["for"]).unwrap_or(rest);
-                let seconds =
-                    duration(rest).ok_or_else(|| ParseError::BadDuration(clause.clone()))?;
+                let seconds = duration(rest).ok_or_else(bad_duration)?;
                 steps.push(Command::Wait { seconds });
-                implicit_disarm = false;
             }
-            _ => return Err(ParseError::UnknownClause(clause)),
+            ["pan" | "tilt" | "look" | "turn" | "move", rest @ ..] => {
+                steps.push(gimbal_move(rest).ok_or_else(unknown)?);
+            }
+            ["recenter" | "center" | "centre" | "recentre", rest @ ..] => {
+                let camera = match rest {
+                    [] | ["all"] | ["both"] | ["cameras"] | ["both", "cameras"] | ["gimbals"] => {
+                        None
+                    }
+                    _ => Some(camera(rest).ok_or_else(unknown)?),
+                };
+                steps.push(Command::Recenter { camera });
+            }
+            ["link"] | ["link", "cameras"] | ["link", "gimbals"] | ["lock", "cameras"] => {
+                steps.push(Command::Link { on: true });
+            }
+            ["unlink"] | ["unlink", "cameras"] | ["unlink", "gimbals"] | ["unlock", "cameras"] => {
+                steps.push(Command::Link { on: false });
+            }
+            _ => return Err(unknown()),
         }
+        implicit_disarm = after_motor_wait;
     }
     if !any {
         return Err(ParseError::Empty);
@@ -99,9 +120,21 @@ pub fn parse(text: &str) -> Result<Plan, ParseError> {
 /// words dropped and empty clauses skipped.
 fn clauses(text: &str) -> Vec<String> {
     const FILLER: &[&str] = &["please", "the", "now", "motors,", "a", "an"];
-    text.to_ascii_lowercase()
-        .replace([',', ';', '.'], " then ")
-        .split_whitespace()
+    // A full stop ends a clause, except inside a number such as `1.5`.
+    let chars: Vec<char> = text.to_ascii_lowercase().chars().collect();
+    let mut flat = String::with_capacity(chars.len() + 8);
+    for (i, &c) in chars.iter().enumerate() {
+        let decimal = c == '.'
+            && i > 0
+            && chars[i - 1].is_ascii_digit()
+            && chars.get(i + 1).is_some_and(char::is_ascii_digit);
+        if matches!(c, ',' | ';') || (c == '.' && !decimal) {
+            flat.push_str(" then ");
+        } else {
+            flat.push(c);
+        }
+    }
+    flat.split_whitespace()
         .map(|w| if w == "and" { "then" } else { w })
         .collect::<Vec<_>>()
         .split(|w| *w == "then")
@@ -114,6 +147,68 @@ fn clauses(text: &str) -> Vec<String> {
         })
         .filter(|c| !c.is_empty())
         .collect()
+}
+
+/// `camera 2`, `cam 1`, `camera two`, or a bare `1` / `2`.
+fn camera(words: &[&str]) -> Option<u8> {
+    let n = match words {
+        ["camera" | "cam" | "gimbal", n] | ["on", "camera" | "cam", n] => n,
+        [n] => n,
+        _ => return None,
+    };
+    let n = number(n)?;
+    (n == 1.0 || n == 2.0).then_some(n as u8)
+}
+
+/// The words after a gimbal verb: a direction, an optional `camera N` and
+/// an optional duration (default one second), in any order. The direction
+/// decides between pan and tilt whatever the verb was.
+fn gimbal_move(words: &[&str]) -> Option<Command> {
+    let mut rest: Vec<&str> = words
+        .iter()
+        .copied()
+        .filter(|w| *w != "for" && *w != "on")
+        .collect();
+    let i = rest
+        .iter()
+        .position(|w| matches!(*w, "left" | "right" | "up" | "down"))?;
+    let direction = rest.remove(i);
+    let mut cam = 1;
+    if let Some(i) = rest
+        .iter()
+        .position(|w| matches!(*w, "camera" | "cam" | "gimbal"))
+    {
+        let end = (i + 2).min(rest.len());
+        cam = camera(&rest[i..end])?;
+        rest.drain(i..end);
+    }
+    let seconds = if rest.is_empty() {
+        1.0
+    } else {
+        duration(&rest)?
+    };
+    Some(match direction {
+        "left" => Command::Pan {
+            camera: cam,
+            direction: Horizontal::Left,
+            seconds,
+        },
+        "right" => Command::Pan {
+            camera: cam,
+            direction: Horizontal::Right,
+            seconds,
+        },
+        "up" => Command::Tilt {
+            camera: cam,
+            direction: Vertical::Up,
+            seconds,
+        },
+        _ => Command::Tilt {
+            camera: cam,
+            direction: Vertical::Down,
+            seconds,
+        },
+    })
 }
 
 /// `5`, `5s`, `5 seconds`, `two minutes`, `half minute`, `minute`… in seconds.
@@ -224,6 +319,48 @@ mod tests {
             parse("arm for 2 s then disarm then wait 1 s then disarm"),
             Ok(Plan::new(vec![Arm, wait(2.0), Disarm, wait(1.0), Disarm]))
         );
+    }
+
+    #[test]
+    fn parses_gimbal_moves() {
+        let pan = |camera, direction, seconds| Pan {
+            camera,
+            direction,
+            seconds,
+        };
+        let tilt = |camera, direction, seconds| Tilt {
+            camera,
+            direction,
+            seconds,
+        };
+        for (text, want) in [
+            ("pan left 2 seconds", pan(1, Horizontal::Left, 2.0)),
+            (
+                "pan camera 2 right for 1.5 s",
+                pan(2, Horizontal::Right, 1.5),
+            ),
+            ("look up 3 seconds on camera 2", tilt(2, Vertical::Up, 3.0)),
+            ("tilt down", tilt(1, Vertical::Down, 1.0)),
+            ("turn right for two seconds", pan(1, Horizontal::Right, 2.0)),
+            ("tilt cam 2 up", tilt(2, Vertical::Up, 1.0)),
+        ] {
+            assert_eq!(parse(text), Ok(Plan::new(vec![want])), "{text:?}");
+        }
+        assert_eq!(
+            parse(
+                "recenter, then recenter camera 2, then center both, then link cameras, then unlink"
+            ),
+            Ok(Plan::new(vec![
+                Recenter { camera: None },
+                Recenter { camera: Some(2) },
+                Recenter { camera: None },
+                Link { on: true },
+                Link { on: false },
+            ]))
+        );
+        assert!(parse("pan").is_err());
+        assert!(parse("pan sideways").is_err());
+        assert!(parse("pan camera 3 left").is_err());
     }
 
     #[test]

@@ -13,11 +13,15 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use dji_commands::{Command, Limits, Plan};
+use dji_commands::{Command, Horizontal, Limits, Plan, Vertical};
 use dji_common::logln;
 
 use crate::Vehicle;
+use crate::gimbal::{Camera, GimbalMove};
 use crate::motors::Request;
+
+/// Gimbal move magnitude for plan steps, the portal joystick's default.
+const GIMBAL_SPEED: i16 = 200;
 
 /// How long one motor step may take (the motor path tries the RC link,
 /// then the UART's activation sequence).
@@ -154,6 +158,49 @@ fn run(vehicle: &Vehicle, plan: Plan) {
                 .perform(Request::Stop, MOTOR_STEP_TIMEOUT)
                 .map(|_| armed = false),
             Command::Wait { seconds } => wait(ex, Duration::from_secs_f32(*seconds)),
+            Command::Pan {
+                camera,
+                direction,
+                seconds,
+            } => {
+                let yaw = match direction {
+                    Horizontal::Left => -GIMBAL_SPEED,
+                    Horizontal::Right => GIMBAL_SPEED,
+                };
+                let mv = GimbalMove {
+                    pitch: 0,
+                    yaw,
+                    active: true,
+                };
+                gimbal_move(vehicle, *camera, mv, *seconds)
+            }
+            Command::Tilt {
+                camera,
+                direction,
+                seconds,
+            } => {
+                let pitch = match direction {
+                    Vertical::Up => GIMBAL_SPEED,
+                    Vertical::Down => -GIMBAL_SPEED,
+                };
+                let mv = GimbalMove {
+                    pitch,
+                    yaw: 0,
+                    active: true,
+                };
+                gimbal_move(vehicle, *camera, mv, *seconds)
+            }
+            Command::Recenter { camera } => match camera.map(Camera::from_number) {
+                Some(None) => Err(format!("no camera {}", camera.unwrap_or(0))),
+                target => {
+                    vehicle.gimbal.request_reset(target.flatten());
+                    Ok(())
+                }
+            },
+            Command::Link { on } => {
+                vehicle.gimbal.set_linked(*on);
+                Ok(())
+            }
         };
         if let Err(e) = result {
             outcome = Err(if e.is_empty() {
@@ -178,6 +225,15 @@ fn run(vehicle: &Vehicle, plan: Plan) {
     }
     logln!("plan: {message}");
     ex.finish(at, ok, message);
+}
+
+/// Drive one camera for `seconds`, then release it, cancel or not.
+fn gimbal_move(vehicle: &Vehicle, camera: u8, mv: GimbalMove, seconds: f32) -> Result<(), String> {
+    let cam = Camera::from_number(camera).ok_or(format!("no camera {camera}"))?;
+    vehicle.gimbal.apply_move(cam, mv);
+    let result = wait(&vehicle.executor, Duration::from_secs_f32(seconds));
+    vehicle.gimbal.apply_move(cam, GimbalMove::RELEASE);
+    result
 }
 
 /// Sleep `d` in slices, ending early (with an empty error) on cancel.
@@ -216,6 +272,32 @@ mod tests {
         let s = v.executor.status();
         assert!(!s.running);
         assert_eq!((s.ok, s.message.as_str()), (Some(false), "cancelled"));
+    }
+
+    #[test]
+    fn gimbal_steps_drive_then_release_the_camera() {
+        let v = Vehicle::new();
+        let plan = Plan::new(vec![
+            Command::Pan {
+                camera: 2,
+                direction: Horizontal::Left,
+                seconds: 0.3,
+            },
+            Command::Link { on: true },
+            Command::Recenter { camera: None },
+        ]);
+        v.executor.start(&v, "", plan).unwrap();
+        sleep(Duration::from_millis(120));
+        let g = v.gimbal.lock();
+        assert_eq!((g.cam2.active, g.cam2.yaw), (true, -GIMBAL_SPEED));
+        drop(g);
+        sleep(Duration::from_millis(400));
+        let g = v.gimbal.lock();
+        assert!(!g.cam2.active, "released after the move");
+        assert!(g.linked);
+        assert_eq!(g.reset_pending, [Camera::One]); // linked: the master only
+        drop(g);
+        assert_eq!(v.executor.status().ok, Some(true));
     }
 
     #[test]

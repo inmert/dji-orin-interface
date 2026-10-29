@@ -27,8 +27,11 @@ function load(file, react, globals = {}) {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
   }).outputText;
   const jsx = (type, props) => ({ type, props });
+  // Components import helpers from src/api.ts; load it the same way.
+  const api = name => name.endsWith('/api') && !file.endsWith('api.ts')
+    ? load('src/api.ts', react, globals) : undefined;
   vm.runInNewContext(source, {
-    exports, require: name => name === 'react' ? react : { jsx, jsxs: jsx }, ...globals,
+    exports, require: name => name === 'react' ? react : api(name) ?? { jsx, jsxs: jsx }, ...globals,
   });
   return exports;
 }
@@ -57,7 +60,7 @@ class Socket {
 }
 const { useLink } = load('src/api.ts', h.react, {
   WebSocket: Socket, URLSearchParams,
-  location: { search: '', protocol: 'https:', hostname: 'orin' },
+  location: { search: '', protocol: 'https:', host: 'orin:8443' },
   Date: { now: () => now },
   window: { setInterval: fn => { tick = fn; }, setTimeout: () => { throw Error('unexpected retry'); } },
   clearTimeout() {}, clearInterval() {},
@@ -70,7 +73,7 @@ sockets[0].onclose();
 sockets[0].onopen();
 link.send({ cmd: 'stop' });
 assert.equal(sockets[1].sent.length, 1);
-assert.equal(sockets[1].url, 'wss://orin:8081');
+assert.equal(sockets[1].url, 'wss://orin:8443/ws');
 const snapshot = frames => ({ data: JSON.stringify({ frames, streams: {}, gimbals: {}, link_up: true, linked: false }) });
 sockets[1].onmessage(snapshot(100));
 assert.equal(h.states[2].value, true, 'cached initial snapshot is stale');
@@ -212,18 +215,20 @@ for (const disabled of [false, true]) {
   }
 }
 const { modeSwitch } = load('src/telemetry/FlightPanel.tsx', harness().react,
-  { window: { confirm: () => true } });
+  { window: { confirm: () => true, isSecureContext: true }, navigator: {} });
 assert.deepEqual([8000, 0, -8000].map(modeSwitch), ['P', 'S', 'A'], 'RC mode switch positions');
 
 // The command bar checks a sentence first and only runs what the server showed back.
 {
   const bar = harness();
   bar.react.useState = () => ['arm for 2 seconds then disarm', () => {}];
-  const { CommandBar } = load('src/telemetry/FlightPanel.tsx', bar.react, { window: { confirm: () => true } });
+  const { CommandBar } = load('src/telemetry/FlightPanel.tsx', bar.react,
+    { window: { confirm: () => true, isSecureContext: false }, navigator: {} });
   const sent = [];
   const idle = { running: false, plan: null, text: '', step: 0, message: '', ok: null, preview: null, preview_error: null };
   let tree = CommandBar({ plan: idle, enabled: true, send: c => sent.push(c) });
-  let [check, run, cancel] = buttons(tree);
+  let [talk, check, run, cancel] = buttons(tree);
+  assert.equal(talk.props.disabled, true, 'no microphone without a secure context');
   assert.equal(run.props.disabled, true, 'run needs a checked plan');
   assert.equal(cancel.props.disabled, true);
   check.props.onClick();
@@ -231,12 +236,12 @@ assert.deepEqual([8000, 0, -8000].map(modeSwitch), ['P', 'S', 'A'], 'RC mode swi
   const checked = { ...idle, text: 'arm for 2 seconds then disarm',
     preview: { steps: [{ cmd: 'arm' }, { cmd: 'wait', seconds: 2 }, { cmd: 'disarm' }] } };
   tree = CommandBar({ plan: checked, enabled: true, send: c => sent.push(c) });
-  [check, run, cancel] = buttons(tree);
+  [talk, check, run, cancel] = buttons(tree);
   assert.equal(run.props.disabled, false);
   run.props.onClick();
   assert.equal(JSON.stringify(sent.at(-1)), JSON.stringify({ cmd: 'plan', text: 'arm for 2 seconds then disarm', run: true }));
   tree = CommandBar({ plan: { ...checked, running: true, plan: checked.preview, preview: null }, enabled: true, send: c => sent.push(c) });
-  [check, run, cancel] = buttons(tree);
+  [talk, check, run, cancel] = buttons(tree);
   assert.equal(run.props.disabled, true, 'no second run while one runs');
   cancel.props.onClick();
   assert.equal(JSON.stringify(sent.at(-1)), JSON.stringify({ cmd: 'cancel' }));

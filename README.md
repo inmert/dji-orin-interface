@@ -110,7 +110,10 @@ apps/
     src/portal.rs               the portal's WebSocket messages → Vehicle operations
     src/ports.rs                default serial ports for the direct readers (re-picked on reopen)
     src/video.rs                camera video: RC mux / UDT H.264 → NVDEC → MJPEG, on demand
-    src/ws.rs / http.rs         WebSocket + static file server
+    src/http.rs                 HTTP(S) on one port each: files, video, /ws upgrade, POST /voice
+    src/ws.rs                   the WebSocket: snapshots down, portal messages up
+    src/tls.rs                  self-signed certificate for the HTTPS listener (browser microphone)
+    src/voice.rs                voice upload → ffmpeg → whisper-cli on the GPU → text
 web/                          Vite + React + TypeScript front end (built to web/dist)
 scripts/                      gadget bring-up/teardown + run_{capture,bridge,server}.sh
 logs/                         run-script logs (git-ignored)
@@ -135,9 +138,11 @@ operations, so a second caller (a command API, say) uses the same ones.
 
 The project is **Rust** (edition 2024). `common`, `protocol` and `transport` are
 **dependency-free**, so the capture tools (`cargo build -p dji-tools`) never
-compile the web stack. `dji-vehicle` adds only `serde` (its status types are
-serialized to the UI) and turns on `dji-protocol`'s `serde` feature; `dji-server`
-alone pulls the web crates (`tiny_http`, `tungstenite`, `serde_json`). `dji-udt` has no crate dependencies either; its
+compile the web stack. `dji-commands` and `dji-vehicle` add only `serde`
+(plans and status types are serialized to the UI), and `dji-vehicle` turns
+on `dji-protocol`'s `serde` feature; `dji-server` alone pulls the web crates
+(`tungstenite`, `serde_json`, and `openssl` against the system library for
+the HTTPS listener). `dji-udt` has no crate dependencies either; its
 build script compiles the vendored C++ with the system `c++` and `ar`. Framing and checksums live once in
 `dji_protocol::duml` (`parse`/`scan`/`build`, the streaming `Decoder`), shared
 by the gadget side, the host side, and the command builders. Safe USB wrappers
@@ -233,6 +238,7 @@ cargo build --release
 sudo scripts/run_server.sh                 # logs to logs/server.log; RC NOT plugged in yet
 # power the RC on, let it fully boot, THEN plug its USB-C tablet port into the Orin
 # open http://<orin-ip>:8080/ on a device on the same network
+# (https://<orin-ip>:8443/, self-signed, for voice input)
 sudo scripts/restore_gadget.sh             # when done
 ```
 
@@ -304,20 +310,43 @@ off** unless you mean to fly:
 sudo OSDK_APP_ID=<app id> scripts/run_server.sh
 ```
 
-**Text commands.** The *Flight telemetry* page also has a command bar.
-Type a sentence such as `arm for 5 seconds then disarm`, press **Check** to
-see the steps the server made of it, then **Run** (asks for confirmation);
+**Text and voice commands.** The *Flight telemetry* page also has a command
+bar. Type a sentence such as `arm for 5 seconds then disarm`, press **Check**
+to see the steps the server made of it, then **Run** (asks for confirmation);
 **Cancel** stops a running plan after its current step. The grammar
-(`crates/commands`) understands arm / start motors / spin up, disarm / stop,
-wait / hold with seconds or minutes, joined by *then*, *and* or commas;
-`arm for N` always disarms again afterwards. A JSON plan
+(`crates/commands`) understands:
+
+- motors: `arm` / `start motors` / `spin up`, `disarm` / `stop`; `arm for N`
+  always disarms again afterwards;
+- `wait` / `hold` with seconds or minutes;
+- gimbal: `pan left 2 seconds`, `pan camera 2 right for 1 s`, `look up`,
+  `tilt down 3 s` (camera 1 and one second unless said), `recenter`,
+  `recenter camera 2`, `link cameras`, `unlink`;
+
+joined by *then*, *and* or commas. A JSON plan
 (`{"steps":[{"cmd":"arm"},{"cmd":"wait","seconds":5},{"cmd":"disarm"}]}`) is
-accepted in the same box. Every plan is checked against limits (60 s per
-wait, 60 s of motors per plan) before it runs, and a plan that fails or is
-cancelled after arming stops the motors first. The steps go out over the
-same motor path as the buttons: the RC link first. Verified on the aircraft
-with `arm for 3 seconds then disarm` (2026-10-29, props on): ACK 0.2 s after
-each step, FC status On ground for the 3 s, then Stopped.
+accepted in the same box; that is the shape a language model will be asked
+for once one is added behind the grammar. Every plan is checked against
+limits (60 s per wait, 60 s of motors per plan, 10 s per gimbal move) before
+it runs, and a plan that fails or is cancelled after arming stops the motors
+first. Motor steps go out over the same path as the buttons: the RC link
+first. Verified on the aircraft with `arm for 3 seconds then disarm`
+(2026-10-29, props on): ACK 0.2 s after each step, FC status On ground for
+the 3 s, then Stopped.
+
+**Hold to talk.** The same bar has a **Talk** button: hold it, speak, release,
+and the sentence appears in the box already checked. Speech is transcribed
+on the Orin by [whisper.cpp](https://github.com/ggml-org/whisper.cpp) on the
+GPU (nothing leaves the machine); build it once with
+`scripts/setup_whisper.sh` (clones to `~/repos/third_party/whisper.cpp`,
+fetches the `base.en` and `small.en` models; `WHISPER_CLI` / `WHISPER_MODEL`
+point the server elsewhere). The browser's recording goes to `POST /voice`,
+`ffmpeg` makes it 16 kHz WAV, `whisper-cli` returns the text. Browsers only
+open the microphone on a secure origin, so use the HTTPS listener:
+`https://<orin-ip>:8443/`, with a self-signed certificate the server
+generates on first start into `certs/` (accept the browser's warning once;
+`TLS=off` disables the listener). The WebSocket is served on the same port
+as the page (`/ws`), so there is nothing else to accept.
 
 **Direct USB link.** The server likewise reads the aircraft's USB API port
 (mode switch in the PC position) read-only: the first `ttyACM` that is not the
@@ -440,8 +469,10 @@ its mount's heading and the video stream described above (see
 - [x] Motor start/stop from the portal: over the RC link (`0x03/0x2a`) and the OSDK UART
       (activation + control authority), with the USB flight unlock (2026-10-28, props off)
 - [x] Text command plans (arm / wait / disarm) run on the aircraft from the portal (2026-10-29)
+- [x] Gimbal steps (pan, tilt, recenter, link) in the command model
+- [ ] Voice input: hold-to-talk in the portal, whisper.cpp on the Orin (built; live check pending)
 - [ ] Flight steps (take off, land, hover, move) in the command model
-- [ ] Voice front end (on-device speech to text) and an LLM fallback for free-form sentences
+- [ ] An LLM fallback for free-form sentences, producing the plan JSON
 
 ## Acknowledgements
 

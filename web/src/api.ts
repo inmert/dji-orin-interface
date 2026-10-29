@@ -152,7 +152,29 @@ export interface Telemetry {
 export type PlanStep =
   | { cmd: "arm" }
   | { cmd: "disarm" }
-  | { cmd: "wait"; seconds: number };
+  | { cmd: "wait"; seconds: number }
+  | { cmd: "pan"; camera: number; direction: "left" | "right"; seconds: number }
+  | { cmd: "tilt"; camera: number; direction: "up" | "down"; seconds: number }
+  | { cmd: "recenter"; camera: number | null }
+  | { cmd: "link"; on: boolean };
+
+/** A step as a short phrase, for the command bar. */
+export function stepText(s: PlanStep): string {
+  switch (s.cmd) {
+    case "wait": return `wait ${s.seconds} s`;
+    case "pan": return `pan camera ${s.camera} ${s.direction} ${s.seconds} s`;
+    case "tilt": return `tilt camera ${s.camera} ${s.direction} ${s.seconds} s`;
+    case "recenter": return s.camera === null ? "recenter both cameras" : `recenter camera ${s.camera}`;
+    case "link": return s.on ? "link cameras" : "unlink cameras";
+    default: return s.cmd;
+  }
+}
+
+/** Voice transcription result (`POST /voice`). */
+export interface Transcript {
+  text: string;
+  ms: number;
+}
 
 /** Progress of the command executor (Status in crates/vehicle/src/executor.rs). */
 export interface PlanStatus {
@@ -304,8 +326,12 @@ export function isMotorStatus(value: unknown): value is MotorStatus {
     && optional(value.usb_flight, v => typeof v === "string");
 }
 
-const isPlanStep = (s: unknown) => record(s)
-  && (s.cmd === "arm" || s.cmd === "disarm" || (s.cmd === "wait" && finite(s.seconds)));
+const isPlanStep = (s: unknown) => record(s) && (
+  s.cmd === "arm" || s.cmd === "disarm"
+  || (s.cmd === "wait" && finite(s.seconds))
+  || ((s.cmd === "pan" || s.cmd === "tilt") && finite(s.camera) && typeof s.direction === "string" && finite(s.seconds))
+  || (s.cmd === "recenter" && optional(s.camera, finite))
+  || (s.cmd === "link" && typeof s.on === "boolean"));
 const isPlan = (p: unknown) => record(p) && Array.isArray(p.steps) && p.steps.every(isPlanStep);
 
 export function isPlanStatus(value: unknown): value is PlanStatus {
@@ -360,8 +386,9 @@ export function useLink() {
       setStale(true);
       lastFrameChange = 0;
       previousFrames = undefined;
+      // Same origin, same port: the server upgrades `/ws` on both listeners.
       const scheme = location.protocol === "https:" ? "wss" : "ws";
-      const url = `${scheme}://${location.hostname}:8081`;
+      const url = `${scheme}://${location.host}/ws`;
       const ws = new WebSocket(url);
       wsRef.current = ws;
       ws.onopen = () => {

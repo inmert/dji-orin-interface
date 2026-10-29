@@ -1,6 +1,9 @@
 # Rust build output
 /target/
 
+# Self-signed TLS certificate the server generates on first start
+certs/
+
 # Capture logs / sample data
 *.log
 logs/

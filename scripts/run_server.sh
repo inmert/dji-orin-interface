@@ -10,7 +10,8 @@
 # STOP / browser disconnect releases every gimbal. Run props-off / aircraft secured.
 #
 # Usage: sudo scripts/run_server.sh [logfile]
-#   Then open http://<orin-ip>:8080/ in a browser on the same network.
+#   Then open http://<orin-ip>:8080/ in a browser on the same network, or
+#   https://<orin-ip>:8443/ (self-signed certificate) for the microphone.
 #
 # BRING-UP ORDER: run this with the RC unplugged, power the RC on and let it
 # fully boot, THEN plug it in. An RC that boots with the cable attached locks the
@@ -78,8 +79,12 @@ ln -sf "$G/dji/functions/ffs.dji" "$G/dji/configs/c.1/ffs.dji"
 mkdir -p "$FFS"
 mountpoint -q "$FFS" || mount -t functionfs dji "$FFS"
 
-# 4. Start the server (writes descriptors, serves HTTP :8080 + WS :8081).
+# 4. Start the server (writes descriptors, serves HTTP :8080 + HTTPS :8443).
 : > "$LOG"
+export TLS_CERT_DIR="${TLS_CERT_DIR:-$REPO/certs}"
+# Voice: whisper.cpp lives in the invoking user's home, not root's.
+USER_HOME="$(getent passwd "${SUDO_USER:-$USER}" | cut -d: -f6)"
+export WHISPER_DIR="${WHISPER_DIR:-$USER_HOME/repos/third_party/whisper.cpp}"
 "$DAEMON" "$FFS" "$WEB_ROOT" >> "$LOG" 2>&1 &
 DAEMON_PID=$!
 echo "$DAEMON_PID" > /run/ffs_capture.pid
@@ -101,6 +106,6 @@ echo "$UDC_NAME" > "$G/dji/UDC"
 COMMITTED=1
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo "OK: server gadget bound to $UDC_NAME (18d1:2d00). Log: $LOG"
-echo "   Open the UI at http://${IP:-<orin-ip>}:8080/  (WebSocket on :8081)"
+echo "   Open the UI at http://${IP:-<orin-ip>}:8080/  (voice input: https://${IP:-<orin-ip>}:8443/)"
 echo "   Now power the RC on, let it fully boot, THEN plug it into the Orin's USB-C."
 echo "   Expect 'gadget: ENABLE' in $LOG within seconds."

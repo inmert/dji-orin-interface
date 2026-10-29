@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { Command, FlightData, FlightLink, MotorStatus, NO_PORT, PlanStatus, PlanStep } from "../api";
+import { useRef, useState } from "react";
+import { Command, FlightData, FlightLink, MotorStatus, NO_PORT, PlanStatus, Transcript, stepText } from "../api";
+import { Icon } from "../components/Icon";
 import { Row, Tile, deg, fixed, useAdvancing } from "./Tile";
 
 const pad2 = (n: number) => n.toString().padStart(2, "0");
@@ -176,10 +177,61 @@ function Motors({ motors, enabled, uartOpen, send }: {
   );
 }
 
-const stepText = (s: PlanStep) =>
-  s.cmd === "wait" ? `wait ${s.seconds} s` : s.cmd;
+type VoiceState = "idle" | "listening" | "transcribing" | "failed";
 
-/** Text commands: type a sentence, check what the server made of it, run it. */
+/** The browser can record: a microphone API on a secure origin (HTTPS or localhost). */
+export const canRecord = () =>
+  typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia
+  && typeof MediaRecorder !== "undefined" && window.isSecureContext;
+
+/** Push-to-talk: record while held, then transcribe on the server. */
+export function useVoice(onText: (text: string) => void) {
+  const [state, setState] = useState<VoiceState>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const recorder = useRef<MediaRecorder | null>(null);
+  const start = async () => {
+    if (recorder.current || !canRecord()) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"]
+        .find(t => MediaRecorder.isTypeSupported(t));
+      const rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      const chunks: BlobPart[] = [];
+      rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      rec.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        recorder.current = null;
+        const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+        setState("transcribing");
+        try {
+          const res = await fetch("/voice", { method: "POST", body: blob, headers: { "Content-Type": blob.type } });
+          if (!res.ok) throw new Error(await res.text());
+          const t = (await res.json()) as Transcript;
+          setState("idle");
+          setError(null);
+          if (t.text) onText(t.text);
+        } catch (e) {
+          setState("failed");
+          setError(e instanceof Error ? e.message : String(e));
+        }
+      };
+      recorder.current = rec;
+      rec.start();
+      setState("listening");
+      setError(null);
+    } catch (e) {
+      setState("failed");
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  const stop = () => {
+    const rec = recorder.current;
+    if (rec && rec.state === "recording") rec.stop();
+  };
+  return { state, error, start, stop };
+}
+
+/** Text commands: type (or speak) a sentence, check what the server made of it, run it. */
 export function CommandBar({ plan, enabled, send }: {
   plan: PlanStatus;
   /** The server can carry out motor steps. */
@@ -187,6 +239,11 @@ export function CommandBar({ plan, enabled, send }: {
   send: (c: Command) => void;
 }) {
   const [text, setText] = useState("");
+  const voice = useVoice((spoken) => {
+    setText(spoken);
+    send({ cmd: "plan", text: spoken });
+  });
+  const mic = canRecord();
   const checked = plan.preview && plan.text === text.trim();
   const steps = plan.running || plan.ok !== null ? plan.plan?.steps ?? [] : [];
   const run = () => {
@@ -214,6 +271,21 @@ export function CommandBar({ plan, enabled, send }: {
           disabled={plan.running}
           onChange={(e) => setText(e.target.value)}
         />
+        <button
+          type="button"
+          className={`tool${voice.state === "listening" ? " on" : ""}`}
+          disabled={!mic || plan.running || voice.state === "transcribing"}
+          aria-label="Hold to talk"
+          title={mic ? "Hold to talk; release to transcribe" : "Microphone needs HTTPS: open this page at https://<orin>:8443/"}
+          onPointerDown={(e) => { e.preventDefault(); void voice.start(); }}
+          onPointerUp={voice.stop}
+          onPointerCancel={voice.stop}
+          onPointerLeave={voice.stop}
+          onKeyDown={(e) => { if (e.key === " " && !e.repeat) { e.preventDefault(); void voice.start(); } }}
+          onKeyUp={(e) => { if (e.key === " ") voice.stop(); }}
+        >
+          <Icon name="mic" /> {voice.state === "listening" ? "Listening" : voice.state === "transcribing" ? "Transcribing" : "Talk"}
+        </button>
         <button type="button" className="tool" disabled={plan.running || !text.trim()}
           onClick={() => send({ cmd: "plan", text: text.trim() })}>
           Check
@@ -228,7 +300,11 @@ export function CommandBar({ plan, enabled, send }: {
         </button>
       </div>
       <div className="command-status" role="status">
-        {plan.running ? (
+        {voice.state === "failed" ? (
+          <span className="error-text">Voice: {voice.error}</span>
+        ) : voice.state === "transcribing" ? (
+          <span>Transcribing…</span>
+        ) : plan.running ? (
           <span>Running step {plan.step + 1} of {steps.length}: <strong>{plan.message}</strong></span>
         ) : plan.preview_error ? (
           <span className="error-text">{plan.preview_error}</span>

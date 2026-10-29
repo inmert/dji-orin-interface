@@ -8,6 +8,7 @@ const PATHS = {
   recenter: "M13.2 8A5.2 5.2 0 1 1 11.6 4.3 M13.2 2.5v3h-3",
   stop: "M4.5 4.5h7v7h-7z",
   play: "M5 3.5v9l7-4.5z",
+  mic: "M8 2.2a2 2 0 0 1 2 2v4a2 2 0 1 1-4 0v-4a2 2 0 0 1 2-2z M4.5 8.2a3.5 3.5 0 0 0 7 0 M8 11.7v2.3 M6 14h4",
 } as const;
 
 export type IconName = keyof typeof PATHS;

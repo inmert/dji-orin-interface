@@ -6,16 +6,19 @@
 //! reads telemetry and writes gimbal/thermal/motor frames on the bulk
 //! endpoints, and its serial links read what the aircraft pushes on its own
 //! ports. This binary is the presentation layer: the gadget's ep0 event
-//! loop, the choice of serial ports ([`ports`]), a web front end ([`http`])
-//! and a WebSocket ([`ws`]) that streams the snapshot down and maps the
-//! portal's messages ([`portal`]) onto the vehicle's typed operations.
+//! loop, the choice of serial ports ([`ports`]), a web front end ([`http`],
+//! plain on :8080 and TLS on :8443 with a self-signed certificate
+//! ([`tls`])) and its WebSocket ([`ws`]) that streams the snapshot down and
+//! maps the portal's messages ([`portal`]) onto the vehicle's typed
+//! operations, plus voice transcription for the portal's microphone
+//! ([`voice`]).
 //! [`video`] decodes the cameras' H.264 on the Orin's hardware decoder and
 //! streams it to the browser as MJPEG while someone watches: the gimbal
 //! cameras from the RC's USB mux, the FPV camera over UDT on the aircraft's
 //! USB network.
 //!
 //! ```text
-//!   browser  ──HTTP :8080 / WS :8081──  server (Orin, gadget)  ──USB──  RC ── aircraft
+//!   browser  ──HTTP :8080 / HTTPS :8443──  server (Orin, gadget)  ──USB──  RC ── aircraft
 //!                                              ├──── OSDK UART (rx; motors tx) ──┤
 //!                                              ├──── USB API port (rx; unlock tx)┤
 //!                                              └──── USB network, UDT video ─────┘
@@ -39,12 +42,16 @@
 //! `off` disables that feed). `RC_VIDEO` maps the gimbal-camera feeds to RC
 //! mux channels (default `cam1=0x11,cam2=0x15`; `off` disables them; adding
 //! `fpv=0x13` takes the FPV feed from the RC instead of UDT). `RC_DUMP=<file>` appends the raw RC→Orin bytes
-//! to a file for offline analysis.
+//! to a file for offline analysis. `TLS_CERT_DIR` is where the self-signed
+//! certificate lives (default `certs`; `TLS=off` disables the TLS listener).
+//! `WHISPER_CLI` / `WHISPER_MODEL` locate whisper.cpp for voice input.
 
 mod http;
 mod portal;
 mod ports;
+mod tls;
 mod video;
+mod voice;
 mod ws;
 
 use std::net::SocketAddrV4;
@@ -63,7 +70,7 @@ use dji_vehicle::{Vehicle, motors, thermal};
 use video::{Feed, Source};
 
 const HTTP_ADDR: &str = "0.0.0.0:8080";
-const WS_ADDR: &str = "0.0.0.0:8081";
+const HTTPS_ADDR: &str = "0.0.0.0:8443";
 
 fn die(msg: &str) -> ! {
     logln!("{msg}");
@@ -144,14 +151,26 @@ fn main() {
         .cloned()
         .collect();
 
-    // Web front end + WebSocket come up immediately (independent of the USB link).
+    // Web front end + WebSocket come up immediately (independent of the USB
+    // link): plain HTTP, and HTTPS for the browser's microphone.
+    let cx = Arc::new(http::Context {
+        web_root,
+        feeds: Arc::clone(&feeds),
+        vehicle: Arc::clone(&vehicle),
+    });
     {
-        let feeds = Arc::clone(&feeds);
-        std::thread::spawn(move || http::serve(web_root, feeds));
+        let cx = Arc::clone(&cx);
+        std::thread::spawn(move || http::serve(HTTP_ADDR, None, cx));
     }
-    {
-        let vehicle = Arc::clone(&vehicle);
-        std::thread::spawn(move || ws::serve(vehicle, feeds));
+    if std::env::var("TLS").as_deref() != Ok("off") {
+        let dir = PathBuf::from(std::env::var("TLS_CERT_DIR").unwrap_or_else(|_| "certs".into()));
+        match tls::acceptor(&dir, &tls::local_hosts()) {
+            Ok(acceptor) => {
+                let cx = Arc::clone(&cx);
+                std::thread::spawn(move || http::serve(HTTPS_ADDR, Some(acceptor), cx));
+            }
+            Err(e) => logln!("tls: {e}; no HTTPS listener (voice input needs it)"),
+        }
     }
 
     // Thermal auto range: idle until the UI turns it on.
