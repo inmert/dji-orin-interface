@@ -1,0 +1,16 @@
+[package]
+name = "dji-vehicle"
+description = "The aircraft as typed capabilities (gimbal, thermal, motors) over its links (RC gadget, OSDK UART, USB API port)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+dji-common.workspace = true
+dji-protocol = { workspace = true, features = ["serde"] }
+dji-transport.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

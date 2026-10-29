@@ -1,12 +1,11 @@
 //! Auto range for the thermal camera: keeps the XT2's isotherm band fitted to
 //! the temperatures in view, so its colours always span the scene.
 //!
-//! While [`Commands::thermal_auto`](crate::state::Commands) is on, once a
-//! second: if the camera is not measuring the whole image, queue full-frame
+//! While [`Thermal::auto`](super::Thermal) is on, once a second: if the camera is not measuring the whole image, queue full-frame
 //! area measurement; otherwise read the area's minimum and maximum and, when
 //! they have left the band or the band has grown much wider than them, queue
 //! the writes that move the band to `[floor(min) - 1, ceil(max) + 1]`. The
-//! hysteresis ([`SLACK`]) keeps it from chasing every tenth of a degree.
+//! hysteresis (4 °C of slack) keeps it from chasing every tenth of a degree.
 
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -14,8 +13,8 @@ use std::time::{Duration, Instant};
 use dji_common::logln;
 use dji_protocol::thermal::{AreaStats, Measure};
 
-use crate::reader::Tele;
-use crate::state::{Band, ISOTHERM_RANGE, Shared, ThermalCmd, band_of, isotherm_sequence};
+use super::{Band, ISOTHERM_RANGE, ThermalCmd, band_of, isotherm_sequence};
+use crate::Vehicle;
 
 const PERIOD: Duration = Duration::from_secs(1);
 /// Repeat an area-measurement setup step at most this often while the camera hasn't
@@ -64,16 +63,18 @@ fn is_full_frame(area: &AreaStats) -> bool {
         .all(|(got, want)| (got - want).abs() < 0.01)
 }
 
-pub fn run(tele: Tele, cmds: Shared) {
+/// Keep the band fitted while auto range is on, forever.
+pub fn run(vehicle: &Vehicle) {
+    let thermal = &vehicle.thermal;
     let mut last_setup: Option<(ThermalCmd, Instant)> = None;
     let mut last_band: Option<Instant> = None;
     loop {
         sleep(PERIOD);
-        if !cmds.lock().unwrap().thermal_auto {
+        if !thermal.auto() {
             last_setup = None;
             continue;
         }
-        let Some(report) = tele.lock().unwrap().thermal else {
+        let Some(report) = vehicle.telemetry.lock().unwrap().thermal else {
             continue;
         };
         let area = report.area.filter(is_full_frame);
@@ -86,11 +87,11 @@ pub fn run(tele: Tele, cmds: Shared) {
                 ThermalCmd::Measure(Measure::Area)
             };
             if last_setup.is_none_or(|(prev, t)| prev != step || t.elapsed() >= SETUP_RETRY) {
-                let mut c = cmds.lock().unwrap();
-                if !c.thermal_auto || !c.thermal_capacity(1) || c.thermal_pending.contains(&step) {
+                let mut q = thermal.lock();
+                if !q.auto || !q.capacity(1) || q.pending.contains(&step) {
                     continue;
                 }
-                c.thermal_pending.push(step);
+                q.pending.push(step);
                 last_setup = Some((step, Instant::now()));
                 logln!("thermal auto: setting up full-frame area measurement: {step:?}");
             }
@@ -103,16 +104,16 @@ pub fn run(tele: Tele, cmds: Shared) {
         let Some(target) = auto_band(&area, cur) else {
             continue;
         };
-        let mut c = cmds.lock().unwrap();
-        if !c.thermal_auto
-            || !c.thermal_capacity(5)
-            || c.thermal_pending
+        let mut q = thermal.lock();
+        if !q.auto
+            || !q.capacity(5)
+            || q.pending
                 .iter()
                 .any(|t| matches!(t, ThermalCmd::Isotherm(..)))
         {
             continue;
         }
-        c.thermal_pending.extend(isotherm_sequence(cur, target));
+        q.pending.extend(isotherm_sequence(cur, target));
         last_band = Some(Instant::now());
         logln!(
             "thermal auto: scene {:.1}..{:.1} °C, band {cur:?} -> {target:?}",

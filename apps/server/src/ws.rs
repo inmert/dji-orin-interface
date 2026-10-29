@@ -12,9 +12,9 @@ use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 
 use dji_common::logln;
 use dji_protocol::Telemetry;
+use dji_vehicle::Vehicle;
 
-use crate::reader::Tele;
-use crate::state::{self, Shared};
+use crate::portal;
 use crate::video::{self, Feeds, VideoStatus};
 use crate::{WS_ADDR, die};
 
@@ -29,8 +29,8 @@ struct Snapshot<'a> {
     video: BTreeMap<&'static str, VideoStatus>,
     /// Whether the thermal auto range is on (server-authoritative).
     thermal_auto: bool,
-    /// Motor start/stop progress ([`crate::motors`]).
-    motors: crate::motors::Status,
+    /// Motor start/stop progress ([`dji_vehicle::motors`]).
+    motors: dji_vehicle::motors::Status,
 }
 
 /// The host part of a `Host` header or an `Origin` URL, without the port:
@@ -75,21 +75,20 @@ fn check_origin(req: &Request, resp: Response) -> Result<Response, ErrorResponse
 }
 
 /// Accept WebSocket clients forever, one thread each.
-pub fn serve(cmds: Shared, tele: Tele, feeds: Arc<Feeds>) {
+pub fn serve(vehicle: Arc<Vehicle>, feeds: Arc<Feeds>) {
     let listener =
         TcpListener::bind(WS_ADDR).unwrap_or_else(|e| die(&format!("ws: bind {WS_ADDR}: {e}")));
     logln!("ws: listening on {WS_ADDR}");
     for stream in listener.incoming().flatten() {
-        let cmds = Arc::clone(&cmds);
-        let tele = Arc::clone(&tele);
+        let vehicle = Arc::clone(&vehicle);
         let feeds = Arc::clone(&feeds);
-        std::thread::spawn(move || client(stream, cmds, tele, feeds));
+        std::thread::spawn(move || client(stream, &vehicle, &feeds));
     }
 }
 
 /// One WebSocket client: stream telemetry down, apply commands up. On any exit
 /// (disconnect, error) release every gimbal — a dead-man stop.
-fn client(stream: TcpStream, cmds: Shared, tele: Tele, feeds: Arc<Feeds>) {
+fn client(stream: TcpStream, vehicle: &Vehicle, feeds: &Feeds) {
     let peer = stream
         .peer_addr()
         .map(|a| a.to_string())
@@ -121,12 +120,13 @@ fn client(stream: TcpStream, cmds: Shared, tele: Tele, feeds: Arc<Feeds>) {
     let interval = Duration::from_millis(100);
     loop {
         if last_send.elapsed() >= interval {
-            let (linked, thermal_auto, motors) = {
-                let c = cmds.lock().unwrap();
-                (c.linked, c.thermal_auto, c.motors.clone())
-            };
-            let video = video::statuses(&feeds);
-            let t = tele.lock().unwrap().clone();
+            let (linked, thermal_auto, motors) = (
+                vehicle.gimbal.linked(),
+                vehicle.thermal.auto(),
+                vehicle.motors.status(),
+            );
+            let video = video::statuses(feeds);
+            let t = vehicle.snapshot();
             let json = {
                 serde_json::to_string(&Snapshot {
                     tele: &t,
@@ -144,8 +144,8 @@ fn client(stream: TcpStream, cmds: Shared, tele: Tele, feeds: Arc<Feeds>) {
         }
         match ws.read() {
             Ok(Message::Text(t)) => {
-                let thermal = tele.lock().unwrap().thermal;
-                state::handle(t.as_str(), &cmds, thermal.as_ref());
+                let thermal = vehicle.telemetry.lock().unwrap().thermal;
+                portal::handle(t.as_str(), vehicle, thermal.as_ref());
             }
             Ok(Message::Close(_)) => break,
             Ok(_) => {} // ping/pong/binary: ignore
@@ -154,7 +154,7 @@ fn client(stream: TcpStream, cmds: Shared, tele: Tele, feeds: Arc<Feeds>) {
             Err(_) => break,
         }
     }
-    cmds.lock().unwrap().release_all();
+    vehicle.gimbal.release_all();
     logln!("ws: client {peer} gone; gimbals released");
 }
 

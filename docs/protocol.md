@@ -379,7 +379,7 @@ The setting does not survive an aircraft restart (user-checked 2026-10-28), so i
 has to be sent again, with authority, after every boot.
 
 **From the portal (2026-10-28, verified with props off).** The server speaks
-this OpenProtocol itself (`osdk::command`, `apps/server/src/motors.rs`), all
+this OpenProtocol itself (`osdk::command`, `crates/vehicle/src/motors.rs`), all
 unencrypted on session 2, ACKs matched by sequence number (an ACK frame has no
 set/id; its data starts at byte 12):
 
@@ -404,7 +404,7 @@ control authority: DUML `App[0]` → `FlightCtrl[0]`, type `0x40`,
 **`07` start / `08` stop** (the codes of the FC's "latest app command" list).
 The FC ACKs `00` within 0.1–0.2 s and the UART status went Stopped → On ground
 and back. DJI Pilot never sends it (it has no motor button). The server's
-motor path (`apps/server/src/motors.rs`) hands it to the injector, which
+motor path (`crates/vehicle/src/motors.rs`) hands it to the RC writer, which
 sends it once; the reader logs the ACK. Tested with the USB API port connected but already unlocked;
 with the USB lock active it is untested.
 

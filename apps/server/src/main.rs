@@ -2,14 +2,13 @@
 //!
 //! The Orin presents the FunctionFS accessory gadget (exactly as `ffs_capture`
 //! does), so no DJI tablet is in the loop: the RC relays to the real aircraft.
-//! From the bulk streams it decodes telemetry ([`reader`]) and injects gimbal
-//! commands ([`injector`]). A web front end ([`http`]) talks to it over a
-//! WebSocket ([`ws`]): telemetry down, gimbal commands up ([`state`]).
-//! Independently, [`flight`] reads what the aircraft pushes on its own ports:
-//! the OSDK UART broadcast (attitude, velocity, GPS, battery, status) and the
-//! DUML reports on its USB API port (attitude, flight mode). Those readers
-//! never send; only [`motors`] does, on the UI's explicit request, over the
-//! RC link first and else the UART (with the USB port for the flight unlock).
+//! The aircraft itself is a [`Vehicle`] from `dji-vehicle`: its RC link
+//! reads telemetry and writes gimbal/thermal/motor frames on the bulk
+//! endpoints, and its serial links read what the aircraft pushes on its own
+//! ports. This binary is the presentation layer: the gadget's ep0 event
+//! loop, the choice of serial ports ([`ports`]), a web front end ([`http`])
+//! and a WebSocket ([`ws`]) that streams the snapshot down and maps the
+//! portal's messages ([`portal`]) onto the vehicle's typed operations.
 //! [`video`] decodes the cameras' H.264 on the Orin's hardware decoder and
 //! streams it to the browser as MJPEG while someone watches: the gimbal
 //! cameras from the RC's USB mux, the FPV camera over UDT on the aircraft's
@@ -34,44 +33,37 @@
 //! port (default: the first `ttyACM` that is not the CrystalSky; `off`
 //! disables it). Defaults are chosen again on every reopen ([`ports`]).
 //! `OSDK_APP_ID` is the Onboard SDK app the UI's motor start/stop activates
-//! (unset disables those buttons' commands; see [`motors`]).
+//! on the UART path (unset leaves only the RC link; see
+//! [`dji_vehicle::motors`]).
 //! `FPV_UDT` is the FPV camera's UDT address (default `192.168.42.2:40003`;
 //! `off` disables that feed). `RC_VIDEO` maps the gimbal-camera feeds to RC
 //! mux channels (default `cam1=0x11,cam2=0x15`; `off` disables them; adding
 //! `fpv=0x13` takes the FPV feed from the RC instead of UDT). `RC_DUMP=<file>` appends the raw RC→Orin bytes
 //! to a file for offline analysis.
 
-mod flight;
 mod http;
-mod injector;
-mod motors;
+mod portal;
 mod ports;
-mod reader;
-mod state;
-mod thermal_auto;
 mod video;
 mod ws;
 
 use std::net::SocketAddrV4;
 use std::os::fd::AsFd;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::{JoinHandle, sleep};
 use std::time::Duration;
 
 use dji_common::logln;
-use dji_protocol::Telemetry;
 use dji_transport::aoa::device::answer_setup;
 use dji_transport::usb::ffs::{self, Event};
+use dji_vehicle::links::{rc, serial};
+use dji_vehicle::{Vehicle, motors, thermal};
 
-use reader::Tele;
-use state::{Commands, Shared};
 use video::{Feed, Source};
 
 const HTTP_ADDR: &str = "0.0.0.0:8080";
 const WS_ADDR: &str = "0.0.0.0:8081";
-/// Command/telemetry rate, matching the ~10 Hz Pilot drove the gimbal at.
-const INJECT_HZ: u64 = 10;
 
 fn die(msg: &str) -> ! {
     logln!("{msg}");
@@ -143,8 +135,7 @@ fn main() {
     };
     let web_root = PathBuf::from(args.get(2).cloned().unwrap_or_else(|| "web/dist".into()));
 
-    let cmds: Shared = Arc::new(Mutex::new(Commands::default()));
-    let tele: Tele = Arc::new(Mutex::new(Telemetry::default()));
+    let vehicle = Vehicle::new();
 
     let feeds = Arc::new(video_feeds());
     let rc_feeds: Vec<_> = feeds
@@ -159,14 +150,14 @@ fn main() {
         std::thread::spawn(move || http::serve(web_root, feeds));
     }
     {
-        let (cmds, tele) = (Arc::clone(&cmds), Arc::clone(&tele));
-        std::thread::spawn(move || ws::serve(cmds, tele, feeds));
+        let vehicle = Arc::clone(&vehicle);
+        std::thread::spawn(move || ws::serve(vehicle, feeds));
     }
 
     // Thermal auto range: idle until the UI turns it on.
     {
-        let (tele, cmds) = (Arc::clone(&tele), Arc::clone(&cmds));
-        std::thread::spawn(move || thermal_auto::run(tele, cmds));
+        let vehicle = Arc::clone(&vehicle);
+        std::thread::spawn(move || thermal::auto::run(&vehicle));
     }
 
     // Motor start/stop (sends on the SDK UART only when the UI asks).
@@ -178,8 +169,8 @@ fn main() {
         if app_id.is_none() {
             logln!("motors: OSDK_APP_ID not set; motor commands disabled");
         }
-        let (cmds, tele) = (Arc::clone(&cmds), Arc::clone(&tele));
-        std::thread::spawn(move || motors::run(cmds, tele, app_id));
+        let vehicle = Arc::clone(&vehicle);
+        std::thread::spawn(move || motors::run(&vehicle, app_id));
     }
 
     // Direct aircraft ports: read here, independent of the RC link. An env
@@ -192,16 +183,16 @@ fn main() {
             .ok()
             .and_then(|b| b.parse().ok())
             .unwrap_or(230_400);
-        let tele = Arc::clone(&tele);
+        let vehicle = Arc::clone(&vehicle);
         let pick = move || Some(uart.clone().unwrap_or_else(ports::osdk_uart));
-        std::thread::spawn(move || flight::run::<flight::Osdk>(pick, baud, tele));
+        std::thread::spawn(move || serial::run::<serial::Osdk>(pick, baud, &vehicle));
     }
     let acm = fixed("USB_ACM");
     if acm.as_deref() != Some("off") {
         // CDC-ACM ignores the line rate; any supported value works.
-        let tele = Arc::clone(&tele);
+        let vehicle = Arc::clone(&vehicle);
         let pick = move || acm.clone().or_else(ports::usb_acm);
-        std::thread::spawn(move || flight::run::<flight::Usb>(pick, 115_200, tele));
+        std::thread::spawn(move || serial::run::<serial::Usb>(pick, 115_200, &vehicle));
     }
 
     // USB gadget side: descriptors, then the ep0 event loop. run_server.sh binds
@@ -219,7 +210,7 @@ fn main() {
     // The workers survive a DISABLE/ENABLE cycle (RC power-cycle) on their own;
     // one that exited (endpoint gone) is respawned on the next ENABLE.
     let mut reader_h: Option<JoinHandle<()>> = None;
-    let mut injector_h: Option<JoinHandle<()>> = None;
+    let mut writer_h: Option<JoinHandle<()>> = None;
     ffs::run_events(ep0.as_fd(), |event| match event {
         Event::Enable => {
             logln!("gadget: ENABLE");
@@ -227,20 +218,27 @@ fn main() {
             if needs_spawn(&reader_h) {
                 match open("ep1") {
                     Ok(ep1) => {
-                        let (tele, rc_feeds) = (Arc::clone(&tele), rc_feeds.clone());
-                        reader_h =
-                            Some(std::thread::spawn(move || reader::run(ep1, tele, rc_feeds)));
+                        let (vehicle, rc_feeds) = (Arc::clone(&vehicle), rc_feeds.clone());
+                        reader_h = Some(std::thread::spawn(move || {
+                            rc::read(ep1, &vehicle, |ch, payload| {
+                                if let Some(f) =
+                                    rc_feeds.iter().find(|f| f.rc_channel() == Some(ch))
+                                {
+                                    f.offer(payload);
+                                }
+                            })
+                        }));
                         logln!("link up: telemetry reader running");
                     }
                     Err(e) => logln!("gadget: {e}"),
                 }
             }
-            if needs_spawn(&injector_h) {
+            if needs_spawn(&writer_h) {
                 match open("ep2") {
                     Ok(ep2) => {
-                        let cmds = Arc::clone(&cmds);
-                        injector_h = Some(std::thread::spawn(move || injector::run(ep2, cmds)));
-                        logln!("link up: injector running");
+                        let vehicle = Arc::clone(&vehicle);
+                        writer_h = Some(std::thread::spawn(move || rc::write(ep2, &vehicle)));
+                        logln!("link up: RC writer running");
                     }
                     Err(e) => logln!("gadget: {e}"),
                 }
@@ -248,7 +246,7 @@ fn main() {
         }
         Event::Disable => {
             logln!("gadget: DISABLE");
-            tele.lock().unwrap().link_up = false;
+            vehicle.telemetry.lock().unwrap().link_up = false;
         }
         Event::Setup(s) => {
             let _ = answer_setup(ep0.as_fd(), &s);

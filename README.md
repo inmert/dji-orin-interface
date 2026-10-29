@@ -55,7 +55,7 @@ the specific interfaces each device exposes.
 ## Repository layout
 
 A Cargo **workspace**, layered so each crate has one job and dependencies only
-point downward (apps → transport/protocol → common):
+point downward (apps → vehicle → transport/protocol → common):
 
 ```
 Cargo.toml                    Workspace root: members, shared versions + lints
@@ -88,21 +88,24 @@ crates/
     vendor/udt4/                UDT 4.11 from DJI's Onboard SDK (BSD licence)
     shim.cpp, build.rs          C API over it, built with the system C++ compiler
     src/lib.rs                  safe receive-only Stream (connect/recv/close)
+  vehicle/                    APPLICATION — the aircraft as typed capabilities over its links
+    src/lib.rs                  Vehicle: telemetry snapshot + gimbal, thermal, motors
+    src/gimbal.rs               desired move per camera, camera lock, yaw recenters
+    src/thermal.rs, thermal/auto.rs  XT2 settings queue; auto range fits the isotherm band
+    src/motors.rs               motor start/stop + USB flight unlock (RC link first, then the UART)
+    src/mailbox.rs              ACKs from the readers, matched by sequence for a waiting request
+    src/links/rc.rs             RC gadget: reads ep1 (telemetry + video channels), writes ep2
+    src/links/serial.rs         direct aircraft readers: OSDK UART + USB API port (rx only)
 apps/
   tools/                      PRESENTATION — capture/bridge CLIs
     src/bin/ffs_capture.rs      Orin as the app toward the controller
     src/bin/aoa_capture.rs      Orin as the controller toward DJI Pilot
     src/bin/bridge.rs           transparent DUML MITM (both roles at once)
   server/                     PRESENTATION — web control server (bin `server`)
-    src/main.rs                 gadget event loop, worker lifecycle
-    src/state.rs                desired gimbal state + UI command messages
-    src/injector.rs             streams gimbal commands to the RC (ep2)
-    src/reader.rs               decodes RC telemetry (ep1), hands video channels to video.rs
+    src/main.rs                 gadget event loop, starts the vehicle's link workers
+    src/portal.rs               the portal's WebSocket messages → Vehicle operations
     src/ports.rs                default serial ports for the direct readers (re-picked on reopen)
-    src/flight.rs               direct aircraft readers: OSDK UART + USB API port (rx only)
-    src/motors.rs               motor start/stop + USB flight unlock (RC link first, then the UART)
     src/video.rs                camera video: RC mux / UDT H.264 → NVDEC → MJPEG, on demand
-    src/thermal_auto.rs         thermal auto range (fits the isotherm band to the scene)
     src/ws.rs / http.rs         WebSocket + static file server
 web/                          Vite + React + TypeScript front end (built to web/dist)
 scripts/                      gadget bring-up/teardown + run_{capture,bridge,server}.sh
@@ -117,14 +120,20 @@ broadcast and builds the few commands the motor path sends. Where a feature
 goes both ways, the frames we inject are kept apart from the reports the
 aircraft pushes up: `gimbal` has `command` and `attitude` submodules, and
 `thermal` keeps its settings frames and its `Report` decoder in one file. A
-future feature (e.g. props/motors) slots in as a sibling `src/<feature>.rs` +
-`src/<feature>/`.
+future feature slots in as a sibling `src/<feature>.rs` + `src/<feature>/`.
+
+Everything that *controls* the aircraft is in `dji-vehicle`: a `Vehicle` holds
+the telemetry snapshot and one struct per feature (`gimbal`, `thermal`,
+`motors`) with typed operations, and its `links` workers (RC gadget endpoints,
+serial ports) turn that state into frames and fold the replies back. The web
+server is presentation only: it maps the portal's messages onto those
+operations, so a second caller (a command API, say) uses the same ones.
 
 The project is **Rust** (edition 2024). `common`, `protocol` and `transport` are
 **dependency-free**, so the capture tools (`cargo build -p dji-tools`) never
-compile the web stack. Only `dji-server` pulls crates (`tiny_http`,
-`tungstenite`, `serde`/`serde_json`), and it turns on `dji-protocol`'s `serde`
-feature to serialize telemetry. `dji-udt` has no crate dependencies either; its
+compile the web stack. `dji-vehicle` adds only `serde` (its status types are
+serialized to the UI) and turns on `dji-protocol`'s `serde` feature; `dji-server`
+alone pulls the web crates (`tiny_http`, `tungstenite`, `serde_json`). `dji-udt` has no crate dependencies either; its
 build script compiles the vendored C++ with the system `c++` and `ar`. Framing and checksums live once in
 `dji_protocol::duml` (`parse`/`scan`/`build`, the streaming `Decoder`), shared
 by the gadget side, the host side, and the command builders. Safe USB wrappers
@@ -406,7 +415,7 @@ its mount's heading and the video stream described above (see
 - [x] Live gimbal camera video in the UI (both cameras, Orin hardware decode → MJPEG)
 - [x] XT2 thermal: display mode, spot meter, isotherm band + presets, area measurement
       (decoded from DJI Pilot via the bridge; display mode, area and band set from the portal on the aircraft)
-- [ ] Thermal auto range: verify the latest setup fix on the aircraft
+- [x] Thermal auto range: full-frame setup and refit verified on the aircraft (2026-10-29)
 - [ ] Isotherm enable/disable command (capture from Pilot)
 - [ ] Smoother browser video (frame pacing)
 - [x] Motor start/stop from the portal: over the RC link (`0x03/0x2a`) and the OSDK UART

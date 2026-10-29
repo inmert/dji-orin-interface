@@ -1,4 +1,4 @@
-//! Default serial ports for the direct aircraft readers ([`crate::flight`]),
+//! Default serial ports for the direct aircraft readers (`dji_vehicle::links::serial`),
 //! chosen again on every open attempt so a device plugged in (or renumbered)
 //! after startup is still found.
 //!

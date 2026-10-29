@@ -107,6 +107,7 @@ dependencies = [
  "dji-protocol",
  "dji-transport",
  "dji-udt",
+ "dji-vehicle",
  "serde",
  "serde_json",
  "tiny_http",
@@ -132,6 +133,16 @@ dependencies = [
 [[package]]
 name = "dji-udt"
 version = "0.1.0"
+
+[[package]]
+name = "dji-vehicle"
+version = "0.1.0"
+dependencies = [
+ "dji-common",
+ "dji-protocol",
+ "dji-transport",
+ "serde",
+]
 
 [[package]]
 name = "getrandom"

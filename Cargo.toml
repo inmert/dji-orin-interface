@@ -4,6 +4,7 @@
 #   crates/protocol   domain: DUML framing, gimbal, telemetry       (no I/O; serde optional)
 #   crates/transport  infrastructure: USB (usbfs, FunctionFS), AOA  (libc via externs)
 #   crates/udt        infrastructure: UDT4 client for camera video  (vendored C++, built by build.rs)
+#   crates/vehicle    application: the aircraft as typed capabilities over its links
 #   apps/tools        presentation: ffs_capture, aoa_capture, bridge
 #   apps/server       presentation: web UI server (the only crate with web deps)
 #
@@ -25,6 +26,7 @@ dji-common = { path = "crates/common" }
 dji-protocol = { path = "crates/protocol" }
 dji-transport = { path = "crates/transport" }
 dji-udt = { path = "crates/udt" }
+dji-vehicle = { path = "crates/vehicle" }
 
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
