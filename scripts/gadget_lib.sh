@@ -21,9 +21,11 @@ stop_daemon() {
     return 1
 }
 
-# teardown_dji PID — stop the daemon, then unbind and remove the dji gadget and
-# rebind the stock l4t one. Refuses to unbind (returns 1) if the daemon would
-# not die, since unbinding then deadlocks the kernel.
+# teardown_dji PID [keep-l4t-unbound] — stop the daemon, then unbind and
+# remove the dji gadget and rebind the stock l4t one (skipped when a second
+# argument is given, e.g. by restart_server.sh, so a connected RC never sees
+# the l4t device between two dji gadgets). Refuses to unbind (returns 1) if the
+# daemon would not die, since unbinding then deadlocks the kernel.
 teardown_dji() {
     if ! stop_daemon "$1"; then
         echo "daemon $1 did not exit; NOT unbinding the gadget (that would deadlock)." >&2
@@ -43,6 +45,7 @@ teardown_dji() {
     rmdir "$G/dji/strings/0x409" 2>/dev/null || true
     rmdir "$G/dji" 2>/dev/null || true
 
+    [ -n "${2:-}" ] && return 0
     if [ -d "$G/l4t" ] && [ -z "$(cat "$G/l4t/UDC" 2>/dev/null)" ]; then
         echo "$UDC_NAME" > "$G/l4t/UDC" 2>/dev/null && echo "restored l4t gadget to $UDC_NAME" >&2
     fi

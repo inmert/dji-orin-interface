@@ -235,6 +235,24 @@ within seconds. Two ways it fails silently (the log stops at `gadget: BIND`):
   Replugging doesn't clear this; power-cycle the RC with the cable unplugged,
   then plug in after it boots.
 
+**Restarting without replugging.** Once the RC link is up, restart the server
+(new build, other env vars) with the RC left plugged in:
+
+```bash
+sudo OSDK_APP_ID=<app id> scripts/restart_server.sh
+```
+
+It stops the server and removes its gadget *without* rebinding the stock `l4t`
+gadget in between (which is what left the RC stuck in `default` before), starts
+the new server, and waits for `gadget: ENABLE` (about half a second on the
+aircraft). If the RC does not enable it within 5 s, it makes the RC
+re-enumerate with a soft disconnect/connect of the UDC
+(`/sys/class/udc/*/soft_connect`): the data pull-up drops and returns as on a
+replug while the cable and Type-C roles stay put. The same two writes by hand
+re-enumerate a running server's link (ENABLE 1.4 s later, data flowing again).
+This does not clear the Type-C source lock above; that still needs a replug
+after the RC has booted.
+
 **Flight telemetry.** The server also reads the aircraft's OSDK UART
 (230400 baud) and shows its flight-data broadcast in
 the UI's *Flight telemetry* panel: status and flight mode, attitude, altitude,
