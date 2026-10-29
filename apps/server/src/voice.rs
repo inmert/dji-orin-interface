@@ -93,8 +93,9 @@ pub fn transcribe(audio: &[u8], content_type: &str) -> Result<Transcript, String
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
-    let input = stem.with_extension(extension(content_type));
-    let wav = stem.with_extension("wav");
+    // Distinct names even when the upload is already a WAV.
+    let input = stem.with_extension(format!("in.{}", extension(content_type)));
+    let wav = stem.with_extension("16k.wav");
     let cleanup = || {
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&wav);

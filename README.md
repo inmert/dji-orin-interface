@@ -470,7 +470,8 @@ its mount's heading and the video stream described above (see
       (activation + control authority), with the USB flight unlock (2026-10-28, props off)
 - [x] Text command plans (arm / wait / disarm) run on the aircraft from the portal (2026-10-29)
 - [x] Gimbal steps (pan, tilt, recenter, link) in the command model
-- [ ] Voice input: hold-to-talk in the portal, whisper.cpp on the Orin (built; live check pending)
+- [x] Voice input: hold-to-talk in the portal, whisper.cpp on the Orin's GPU (2026-10-29; an 11 s clip
+      transcribes in 1.3 s as WAV or browser WebM/Opus)
 - [ ] Flight steps (take off, land, hover, move) in the command model
 - [ ] An LLM fallback for free-form sentences, producing the plan JSON
 
