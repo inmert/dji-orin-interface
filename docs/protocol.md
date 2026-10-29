@@ -474,6 +474,26 @@ DM36x `0x08/0x06` status read `01 01 02 00` in both the three-stream and the
 two-stream captures). `cargo run -p dji-udt --example udt_recv -- <ip:port>
 <secs> <file>` checks a UDT port in isolation.
 
+**Evening of 2026-10-28: FPV gone on both paths.** After a USB replug and
+then a full aircraft power cycle, UDT `:40003` connected but carried only UDT
+keep-alives, and RC channel `0x13` was empty (server `RC_VIDEO=…,fpv=0x13`)
+while `0x11`/`0x15` streamed. A DJI Pilot bridge capture
+(`captures/pilot-fpv`) shows Pilot offers no FPV view on this setup, and
+switching the main camera sends, to the dual-gimbal address `0xe4`:
+
+| Main camera | `0x19/0x05` | `0x09/0x71` ("HDLnk Main Camera Bandwidth Percent Set") |
+|-------------|-------------|------------------------------------------------------|
+| XT2 (gimbal 0) | `00` | `08 1a 14` |
+| Z30 (gimbal 2) | `01` | `03 1a 14` |
+
+each ACKed `00`, preceded by `0x19/0x07 00 00`. `1a`/`14` are the two
+cameras' types; the first byte reads as the XT2's share in tens of percent
+(80 % when it is main, 30 % when the Z30 is), leaving no share for the FPV.
+Channel `0x13` was already absent at the start of the first Pilot capture
+(17:24), before Pilot sent any `0x09/0x71`, and present in the 16:21 server
+capture, so whatever turned it off happened in between; whether it is this
+setting, persisted, is unverified.
+
 ## RC USB mux and camera video
 
 What the RC sends the app on its bulk stream (ep1 on our gadget) is not
@@ -517,7 +537,7 @@ carries no picture. Channels:
 | `0x40` | DUML (what `duml::Decoder` scans) |
 | `0x11` | gimbal 0, Zenmuse XT2: H.264 Baseline 1280×720 ~29 fps (visual or thermal picture, see below) |
 | `0x15` | gimbal 2, Zenmuse Z30: H.264 High 1280×720 ~29 fps |
-| `0x13` | FPV camera, H.264 Main 608×448 (same stream as UDT `:40003`); absent while DJI Pilot runs |
+| `0x13` | FPV camera, H.264 Main 608×448 (same stream as UDT `:40003`); often absent, see [FPV camera](#fpv-camera-third-camera) |
 
 The channel ↔ camera mapping was confirmed by picture through the bridge with
 DJI Pilot running. Pilot (v2.5.1.17 on the CrystalSky) decodes both with
