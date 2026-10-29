@@ -26,7 +26,16 @@ mod c {
         pub ospeed: u32,
     }
 
+    /// `struct pollfd`.
+    #[repr(C)]
+    pub struct PollFd {
+        pub fd: c_int,
+        pub events: i16,
+        pub revents: i16,
+    }
+
     unsafe extern "C" {
+        pub fn poll(fds: *mut PollFd, nfds: u64, timeout: c_int) -> c_int;
         pub fn tcgetattr(fd: c_int, t: *mut Termios) -> c_int;
         pub fn tcsetattr(fd: c_int, action: c_int, t: *const Termios) -> c_int;
         pub fn cfmakeraw(t: *mut Termios);
@@ -40,6 +49,9 @@ mod c {
     pub const VTIME: usize = 5;
     pub const VMIN: usize = 6;
     pub const TCSANOW: c_int = 0;
+    pub const POLLERR: i16 = 0x008;
+    pub const POLLHUP: i16 = 0x010;
+    pub const POLLNVAL: i16 = 0x020;
 }
 
 /// The `speed_t` code for a baud rate, if it is one we support.
@@ -109,8 +121,29 @@ impl RxPort {
     }
 
     /// Read whatever has arrived; `Ok(0)` means a second passed in silence.
+    /// A port whose device went away (USB unplug) is an error: the tty is hung
+    /// up and every read would return 0 at once, forever.
     pub fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.file.read(buf)
+        let n = self.file.read(buf)?;
+        if n == 0 && self.hung_up() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "port hung up (device unplugged)",
+            ));
+        }
+        Ok(n)
+    }
+
+    /// Whether the kernel reports the port hung up or gone.
+    fn hung_up(&self) -> bool {
+        let mut p = c::PollFd {
+            fd: self.file.as_raw_fd(),
+            events: 0,
+            revents: 0,
+        };
+        // SAFETY: `p` is one valid pollfd; a zero timeout never blocks.
+        let ready = unsafe { c::poll(&raw mut p, 1, 0) };
+        ready > 0 && p.revents & (c::POLLHUP | c::POLLERR | c::POLLNVAL) != 0
     }
 }
 
@@ -128,5 +161,13 @@ mod tests {
         assert_eq!(speed_code(230_400), Some(0o010003));
         assert_eq!(speed_code(230_000), None);
         assert!(RxPort::open("/dev/null", 1).is_err());
+    }
+
+    #[test]
+    fn live_file_is_not_hung_up() {
+        let port = RxPort {
+            file: File::open("/dev/null").unwrap(),
+        };
+        assert!(!port.hung_up());
     }
 }
