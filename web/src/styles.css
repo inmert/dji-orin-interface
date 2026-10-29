@@ -733,6 +733,28 @@ input[type="range"] {
 .armed-text {
   color: var(--warn);
 }
+.command-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.command-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.command-row input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+}
+.command-status {
+  font-size: 13px;
+}
 .tool.danger.on {
   border-color: var(--line-strong);
   background: var(--raised);
@@ -965,7 +987,8 @@ td:nth-child(n + 3) {
     flex: 1;
     justify-content: center;
   }
-  .motors-bar {
+  .motors-bar,
+  .command-row {
     flex-wrap: wrap;
   }
   .motors-state {

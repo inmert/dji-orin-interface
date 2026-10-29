@@ -1,0 +1,16 @@
+[package]
+name = "dji-commands"
+description = "The aircraft command model: typed steps, a plan with limits, and the text grammar that produces one"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

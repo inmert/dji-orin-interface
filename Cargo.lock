@@ -88,6 +88,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dji-commands"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dji-common"
 version = "0.1.0"
 
@@ -103,6 +111,7 @@ dependencies = [
 name = "dji-server"
 version = "0.1.0"
 dependencies = [
+ "dji-commands",
  "dji-common",
  "dji-protocol",
  "dji-transport",
@@ -138,6 +147,7 @@ version = "0.1.0"
 name = "dji-vehicle"
 version = "0.1.0"
 dependencies = [
+ "dji-commands",
  "dji-common",
  "dji-protocol",
  "dji-transport",

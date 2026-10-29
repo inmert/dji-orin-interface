@@ -86,6 +86,9 @@ pub struct State {
     /// A request from the UI, carried out once by [`run`].
     pub pending: Option<Request>,
     pub status: Status,
+    /// Requests carried out so far (success or not); [`Motors::perform`]
+    /// waits for this to move.
+    completed: u64,
     /// "Allow with USB" succeeded during the current USB session.
     pub usb_allowed: bool,
     /// Motor start (`true`) / stop over the RC link, for the RC writer to
@@ -129,6 +132,28 @@ impl Motors {
         }
         s.pending = Some(req);
         Ok(())
+    }
+
+    /// Queue `req` and wait for it to be carried out: the outcome message,
+    /// or why it failed. `Err` also when nothing picks the request up within
+    /// `timeout` (the motor worker is not running).
+    pub fn perform(&self, req: Request, timeout: Duration) -> Result<String, String> {
+        let before = self.lock().completed;
+        self.request(req)?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            sleep(Duration::from_millis(50));
+            let s = self.lock();
+            if s.completed > before {
+                return match s.status.ok {
+                    Some(true) => Ok(s.status.message.clone()),
+                    _ => Err(s.status.message.clone()),
+                };
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("{} did not complete in time", req.name()));
+            }
+        }
     }
 
     /// For the RC writer: the motor frame to send once, if any.
@@ -291,6 +316,7 @@ pub fn run(vehicle: &std::sync::Arc<Vehicle>, app_id: Option<u32>) {
             Some(result.is_ok()),
             result.unwrap_or_else(|e| e),
         );
+        motors.lock().completed += 1;
     }
 }
 
@@ -558,6 +584,21 @@ mod tests {
         assert!(m.request(Request::Start).is_err());
         assert!(m.request(Request::UsbFlight).is_err());
         assert_eq!(m.lock().pending, Some(Request::Stop));
+    }
+
+    #[test]
+    fn perform_waits_for_completion_and_reports_the_outcome() {
+        let m = Motors::default();
+        // Nobody runs requests here: perform times out, and the request is
+        // left queued for a worker.
+        let err = m
+            .perform(Request::Start, Duration::from_millis(120))
+            .unwrap_err();
+        assert!(err.contains("did not complete"), "{err}");
+        assert_eq!(m.lock().pending, Some(Request::Start));
+        // A stop cannot be displaced, so a start is refused outright.
+        m.request(Request::Stop).unwrap();
+        assert!(m.perform(Request::Start, Duration::ZERO).is_err());
     }
 
     #[test]

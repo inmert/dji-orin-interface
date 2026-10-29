@@ -211,8 +211,36 @@ for (const disabled of [false, true]) {
     unmount();
   }
 }
-const { modeSwitch } = load('src/telemetry/FlightPanel.tsx', harness().react);
+const { modeSwitch } = load('src/telemetry/FlightPanel.tsx', harness().react,
+  { window: { confirm: () => true } });
 assert.deepEqual([8000, 0, -8000].map(modeSwitch), ['P', 'S', 'A'], 'RC mode switch positions');
+
+// The command bar checks a sentence first and only runs what the server showed back.
+{
+  const bar = harness();
+  bar.react.useState = () => ['arm for 2 seconds then disarm', () => {}];
+  const { CommandBar } = load('src/telemetry/FlightPanel.tsx', bar.react, { window: { confirm: () => true } });
+  const sent = [];
+  const idle = { running: false, plan: null, text: '', step: 0, message: '', ok: null, preview: null, preview_error: null };
+  let tree = CommandBar({ plan: idle, enabled: true, send: c => sent.push(c) });
+  let [check, run, cancel] = buttons(tree);
+  assert.equal(run.props.disabled, true, 'run needs a checked plan');
+  assert.equal(cancel.props.disabled, true);
+  check.props.onClick();
+  assert.equal(JSON.stringify(sent.at(-1)), JSON.stringify({ cmd: 'plan', text: 'arm for 2 seconds then disarm' }));
+  const checked = { ...idle, text: 'arm for 2 seconds then disarm',
+    preview: { steps: [{ cmd: 'arm' }, { cmd: 'wait', seconds: 2 }, { cmd: 'disarm' }] } };
+  tree = CommandBar({ plan: checked, enabled: true, send: c => sent.push(c) });
+  [check, run, cancel] = buttons(tree);
+  assert.equal(run.props.disabled, false);
+  run.props.onClick();
+  assert.equal(JSON.stringify(sent.at(-1)), JSON.stringify({ cmd: 'plan', text: 'arm for 2 seconds then disarm', run: true }));
+  tree = CommandBar({ plan: { ...checked, running: true, plan: checked.preview, preview: null }, enabled: true, send: c => sent.push(c) });
+  [check, run, cancel] = buttons(tree);
+  assert.equal(run.props.disabled, true, 'no second run while one runs');
+  cancel.props.onClick();
+  assert.equal(JSON.stringify(sent.at(-1)), JSON.stringify({ cmd: 'cancel' }));
+}
 
 console.log('PASS: reconnect isolation, stale telemetry, disabled movement, joystick drag/clamp/dead zone/pointer ownership, keyboard release, stop, blur, hidden tab, unmount, mode switch');
 

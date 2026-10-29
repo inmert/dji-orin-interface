@@ -1,4 +1,5 @@
-import { Command, FlightData, FlightLink, MotorStatus, NO_PORT } from "../api";
+import { useState } from "react";
+import { Command, FlightData, FlightLink, MotorStatus, NO_PORT, PlanStatus, PlanStep } from "../api";
 import { Row, Tile, deg, fixed, useAdvancing } from "./Tile";
 
 const pad2 = (n: number) => n.toString().padStart(2, "0");
@@ -175,10 +176,79 @@ function Motors({ motors, enabled, uartOpen, send }: {
   );
 }
 
+const stepText = (s: PlanStep) =>
+  s.cmd === "wait" ? `wait ${s.seconds} s` : s.cmd;
+
+/** Text commands: type a sentence, check what the server made of it, run it. */
+export function CommandBar({ plan, enabled, send }: {
+  plan: PlanStatus;
+  /** The server can carry out motor steps. */
+  enabled: boolean;
+  send: (c: Command) => void;
+}) {
+  const [text, setText] = useState("");
+  const checked = plan.preview && plan.text === text.trim();
+  const steps = plan.running || plan.ok !== null ? plan.plan?.steps ?? [] : [];
+  const run = () => {
+    if (!checked) return;
+    if (window.confirm(`Run: ${plan.preview!.steps.map(stepText).join(", then ")}?\nProps may spin. People clear.`)) {
+      send({ cmd: "plan", text: text.trim(), run: true });
+    }
+  };
+  return (
+    <form
+      className="command-bar"
+      aria-label="Text commands"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (checked) run();
+        else if (text.trim()) send({ cmd: "plan", text: text.trim() });
+      }}
+    >
+      <div className="command-row">
+        <input
+          type="text"
+          value={text}
+          placeholder="e.g. arm for 5 seconds then disarm"
+          aria-label="Command"
+          disabled={plan.running}
+          onChange={(e) => setText(e.target.value)}
+        />
+        <button type="button" className="tool" disabled={plan.running || !text.trim()}
+          onClick={() => send({ cmd: "plan", text: text.trim() })}>
+          Check
+        </button>
+        <button type="button" className={`tool${checked ? " on" : ""}`}
+          disabled={!enabled || plan.running || !checked} onClick={run}>
+          Run
+        </button>
+        <button type="button" className="tool danger" disabled={!plan.running}
+          onClick={() => send({ cmd: "cancel" })}>
+          Cancel
+        </button>
+      </div>
+      <div className="command-status" role="status">
+        {plan.running ? (
+          <span>Running step {plan.step + 1} of {steps.length}: <strong>{plan.message}</strong></span>
+        ) : plan.preview_error ? (
+          <span className="error-text">{plan.preview_error}</span>
+        ) : checked ? (
+          <span>Will do: <strong>{plan.preview!.steps.map(stepText).join(", then ")}</strong></span>
+        ) : plan.ok !== null ? (
+          <span className={plan.ok ? "" : "error-text"}>Last plan: {plan.message}</span>
+        ) : (
+          <span className="muted">Type a command and press Check.</span>
+        )}
+      </div>
+    </form>
+  );
+}
+
 /** Flight data from the aircraft's OSDK UART broadcast, and motor start/stop. */
-export function FlightPanel({ flight, motors, rcLink, connected, send }: {
+export function FlightPanel({ flight, motors, plan, rcLink, connected, send }: {
   flight: FlightLink | undefined;
   motors?: MotorStatus;
+  plan?: PlanStatus;
   /** The RC link (gadget) is up, so motor commands can go over it. */
   rcLink: boolean;
   connected: boolean;
@@ -211,6 +281,9 @@ export function FlightPanel({ flight, motors, rcLink, connected, send }: {
           uartOpen={!!flight?.open}
           send={send}
         />
+      )}
+      {plan && (
+        <CommandBar plan={plan} enabled={connected && (rcLink || !!flight?.open)} send={send} />
       )}
       {flight && flight.frames > 0 ? (
         <div className={fresh ? "" : "flight-stale"}>

@@ -144,6 +144,26 @@ export interface Telemetry {
   video?: Record<string, VideoStatus>;
   /** Motor start/stop progress; absent from older servers. */
   motors?: MotorStatus;
+  /** The command plan being run or last checked; absent from older servers. */
+  plan?: PlanStatus;
+}
+
+/** One plan step (Command in crates/commands/src/lib.rs). */
+export type PlanStep =
+  | { cmd: "arm" }
+  | { cmd: "disarm" }
+  | { cmd: "wait"; seconds: number };
+
+/** Progress of the command executor (Status in crates/vehicle/src/executor.rs). */
+export interface PlanStatus {
+  running: boolean;
+  plan: { steps: PlanStep[] } | null;
+  text: string;
+  step: number;
+  message: string;
+  ok: boolean | null;
+  preview: { steps: PlanStep[] } | null;
+  preview_error: string | null;
 }
 
 /** Motor start/stop progress (Status in apps/server/src/motors.rs). */
@@ -180,6 +200,10 @@ export type Command =
   | { cmd: "motors"; on: boolean }
   /** Allow arming with the aircraft's USB API port connected (until restart). */
   | { cmd: "usb_flight" }
+  /** A command sentence: checked and shown back, or run when `run` is true. */
+  | { cmd: "plan"; text: string; run?: boolean }
+  /** Stop the running plan after its current step. */
+  | { cmd: "cancel" }
   | { cmd: "stop" };
 
 export type Status = "connecting" | "open" | "closed";
@@ -280,6 +304,17 @@ export function isMotorStatus(value: unknown): value is MotorStatus {
     && optional(value.usb_flight, v => typeof v === "string");
 }
 
+const isPlanStep = (s: unknown) => record(s)
+  && (s.cmd === "arm" || s.cmd === "disarm" || (s.cmd === "wait" && finite(s.seconds)));
+const isPlan = (p: unknown) => record(p) && Array.isArray(p.steps) && p.steps.every(isPlanStep);
+
+export function isPlanStatus(value: unknown): value is PlanStatus {
+  return record(value) && bool(value.running) && typeof value.text === "string"
+    && counter(value.step) && typeof value.message === "string"
+    && optional(value.ok, bool) && optional(value.plan, isPlan)
+    && optional(value.preview, isPlan) && optional(value.preview_error, e => typeof e === "string");
+}
+
 // JSON parsing alone does not validate a snapshot. Reject the whole message
 // before it changes freshness or reaches components that dereference its rows.
 export function isTelemetry(value: unknown): value is Telemetry {
@@ -290,7 +325,8 @@ export function isTelemetry(value: unknown): value is Telemetry {
     || !optional(value.video, v => record(v) && Object.values(v).every(isVideoStatus))
     || !optional(value.thermal, isThermalReport)
     || !optional(value.thermal_auto, v => typeof v === "boolean")
-    || !optional(value.motors, isMotorStatus)) return false;
+    || !optional(value.motors, isMotorStatus)
+    || !optional(value.plan, isPlanStatus)) return false;
   return Object.values(value.gimbals).every(isGimbal)
     && Object.values(value.streams).every(s => record(s)
       && typeof s.from === "string" && typeof s.to === "string"

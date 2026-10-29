@@ -2,10 +2,14 @@
 //! applied to the [`Vehicle`]. This is the only place the web wire format
 //! meets the vehicle's typed operations.
 
+use std::sync::Arc;
+
 use serde::Deserialize;
 
+use dji_commands::{Plan, grammar};
 use dji_common::logln;
 use dji_vehicle::Vehicle;
+use dji_vehicle::executor::Executor;
 use dji_vehicle::gimbal::{Camera, GimbalMove};
 use dji_vehicle::motors::Request;
 use dji_vehicle::thermal::{DisplayMode, Report};
@@ -49,11 +53,34 @@ pub enum WsCommand {
     /// Allow arming while the aircraft's USB API port is connected.
     #[serde(rename = "usb_flight")]
     UsbFlight,
+    /// A command sentence (`arm for 5 seconds then disarm`) or a JSON plan
+    /// (`{"steps":[…]}`): checked and shown back (`run` false), or run.
+    Plan {
+        text: String,
+        #[serde(default)]
+        run: bool,
+    },
+    /// Stop the running plan after its current step.
+    Cancel,
+}
+
+/// A plan from a sentence (the grammar) or from the JSON shape, checked
+/// against the executor's limits.
+fn plan_from(text: &str, executor: &Executor) -> Result<Plan, String> {
+    let text = text.trim();
+    let plan = if text.starts_with('{') {
+        serde_json::from_str::<Plan>(text).map_err(|e| format!("bad plan JSON: {e}"))?
+    } else {
+        grammar::parse(text).map_err(|e| e.to_string())?
+    };
+    plan.validate(executor.limits())
+        .map_err(|e| e.to_string())?;
+    Ok(plan)
 }
 
 /// Parse one UI message and apply it. `thermal` is the thermal camera's
 /// latest report, which some thermal commands depend on.
-pub fn handle(text: &str, vehicle: &Vehicle, thermal: Option<&Report>) {
+pub fn handle(text: &str, vehicle: &Arc<Vehicle>, thermal: Option<&Report>) {
     match serde_json::from_str::<WsCommand>(text) {
         Ok(WsCommand::Gimbal {
             camera,
@@ -121,6 +148,25 @@ pub fn handle(text: &str, vehicle: &Vehicle, thermal: Option<&Report>) {
             Ok(()) => logln!("ws: usb_flight queued"),
             Err(e) => logln!("ws: {e}"),
         },
+        Ok(WsCommand::Plan { text, run }) => {
+            let ex = &vehicle.executor;
+            let plan = plan_from(&text, ex);
+            if !run {
+                logln!("plan: checked {text:?}: {plan:?}");
+                return ex.preview(&text, plan);
+            }
+            match plan.and_then(|p| ex.start(vehicle, &text, p)) {
+                Ok(()) => logln!("plan: started {text:?}"),
+                Err(e) => {
+                    logln!("plan: refused {text:?}: {e}");
+                    ex.preview(&text, Err(e));
+                }
+            }
+        }
+        Ok(WsCommand::Cancel) => {
+            vehicle.executor.cancel();
+            logln!("plan: cancel requested");
+        }
         Err(e) => logln!("ws: bad command: {e}"),
     }
 }
@@ -195,5 +241,50 @@ mod tests {
         // No UI message reaches the RC writer's motor slot directly.
         handle(r#"{"cmd":"motors_rc","on":true}"#, &v, None);
         assert_eq!(v.motors.take_rc_pending(), None);
+    }
+
+    #[test]
+    fn plan_messages_check_then_run() {
+        use dji_commands::Command;
+        let v = Vehicle::new();
+        handle(
+            r#"{"cmd":"plan","text":"arm for 2 seconds then disarm"}"#,
+            &v,
+            None,
+        );
+        let s = v.executor.status();
+        assert!(!s.running);
+        assert_eq!(
+            s.preview.map(|p| p.steps),
+            Some(vec![
+                Command::Arm,
+                Command::Wait { seconds: 2.0 },
+                Command::Disarm
+            ])
+        );
+        handle(r#"{"cmd":"plan","text":"fly away"}"#, &v, None);
+        assert!(
+            v.executor
+                .status()
+                .preview_error
+                .unwrap()
+                .contains("fly away")
+        );
+        handle(
+            r#"{"cmd":"plan","text":"wait 1000 seconds","run":true}"#,
+            &v,
+            None,
+        );
+        let s = v.executor.status();
+        assert!(!s.running && s.preview_error.unwrap().contains("limit"));
+        handle(
+            r#"{"cmd":"plan","text":"{\"steps\":[{\"cmd\":\"wait\",\"seconds\":0.2}]}","run":true}"#,
+            &v,
+            None,
+        );
+        assert!(v.executor.status().running);
+        handle(r#"{"cmd":"cancel"}"#, &v, None);
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        assert_eq!(v.executor.status().message, "cancelled");
     }
 }

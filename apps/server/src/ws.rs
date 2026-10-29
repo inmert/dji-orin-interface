@@ -31,6 +31,9 @@ struct Snapshot<'a> {
     thermal_auto: bool,
     /// Motor start/stop progress ([`dji_vehicle::motors`]).
     motors: dji_vehicle::motors::Status,
+    /// The command plan being run, or last run / checked
+    /// ([`dji_vehicle::executor`]).
+    plan: dji_vehicle::executor::Status,
 }
 
 /// The host part of a `Host` header or an `Origin` URL, without the port:
@@ -88,7 +91,7 @@ pub fn serve(vehicle: Arc<Vehicle>, feeds: Arc<Feeds>) {
 
 /// One WebSocket client: stream telemetry down, apply commands up. On any exit
 /// (disconnect, error) release every gimbal — a dead-man stop.
-fn client(stream: TcpStream, vehicle: &Vehicle, feeds: &Feeds) {
+fn client(stream: TcpStream, vehicle: &Arc<Vehicle>, feeds: &Feeds) {
     let peer = stream
         .peer_addr()
         .map(|a| a.to_string())
@@ -120,10 +123,11 @@ fn client(stream: TcpStream, vehicle: &Vehicle, feeds: &Feeds) {
     let interval = Duration::from_millis(100);
     loop {
         if last_send.elapsed() >= interval {
-            let (linked, thermal_auto, motors) = (
+            let (linked, thermal_auto, motors, plan) = (
                 vehicle.gimbal.linked(),
                 vehicle.thermal.auto(),
                 vehicle.motors.status(),
+                vehicle.executor.status(),
             );
             let video = video::statuses(feeds);
             let t = vehicle.snapshot();
@@ -134,6 +138,7 @@ fn client(stream: TcpStream, vehicle: &Vehicle, feeds: &Feeds) {
                     video,
                     thermal_auto,
                     motors,
+                    plan,
                 })
                 .unwrap_or_else(|_| "{}".into())
             };

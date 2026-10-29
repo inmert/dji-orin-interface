@@ -88,8 +88,12 @@ crates/
     vendor/udt4/                UDT 4.11 from DJI's Onboard SDK (BSD licence)
     shim.cpp, build.rs          C API over it, built with the system C++ compiler
     src/lib.rs                  safe receive-only Stream (connect/recv/close)
+  commands/                   DOMAIN — the command model (serde only)
+    src/lib.rs                  Command, Plan + Limits, the JSON shape for structured output
+    src/grammar.rs              plain sentences → Plan ("arm for 5 seconds then disarm")
   vehicle/                    APPLICATION — the aircraft as typed capabilities over its links
-    src/lib.rs                  Vehicle: telemetry snapshot + gimbal, thermal, motors
+    src/lib.rs                  Vehicle: telemetry snapshot + gimbal, thermal, motors, executor
+    src/executor.rs             runs a Plan step by step: progress, cancel, motors stopped on failure
     src/gimbal.rs               desired move per camera, camera lock, yaw recenters
     src/thermal.rs, thermal/auto.rs  XT2 settings queue; auto range fits the isotherm band
     src/motors.rs               motor start/stop + USB flight unlock (RC link first, then the UART)
@@ -300,6 +304,21 @@ off** unless you mean to fly:
 sudo OSDK_APP_ID=<app id> scripts/run_server.sh
 ```
 
+**Text commands.** The *Flight telemetry* page also has a command bar.
+Type a sentence such as `arm for 5 seconds then disarm`, press **Check** to
+see the steps the server made of it, then **Run** (asks for confirmation);
+**Cancel** stops a running plan after its current step. The grammar
+(`crates/commands`) understands arm / start motors / spin up, disarm / stop,
+wait / hold with seconds or minutes, joined by *then*, *and* or commas;
+`arm for N` always disarms again afterwards. A JSON plan
+(`{"steps":[{"cmd":"arm"},{"cmd":"wait","seconds":5},{"cmd":"disarm"}]}`) is
+accepted in the same box. Every plan is checked against limits (60 s per
+wait, 60 s of motors per plan) before it runs, and a plan that fails or is
+cancelled after arming stops the motors first. The steps go out over the
+same motor path as the buttons: the RC link first. Verified on the aircraft
+with `arm for 3 seconds then disarm` (2026-10-29, props on): ACK 0.2 s after
+each step, FC status On ground for the 3 s, then Stopped.
+
 **Direct USB link.** The server likewise reads the aircraft's USB API port
 (mode switch in the PC position) read-only: the first `ttyACM` that is not the
 CrystalSky. After an aircraft restart its port may not come back, and the
@@ -420,7 +439,9 @@ its mount's heading and the video stream described above (see
 - [ ] Smoother browser video (frame pacing)
 - [x] Motor start/stop from the portal: over the RC link (`0x03/0x2a`) and the OSDK UART
       (activation + control authority), with the USB flight unlock (2026-10-28, props off)
-- [ ] Send/inject flight commands beyond motor start/stop
+- [x] Text command plans (arm / wait / disarm) run on the aircraft from the portal (2026-10-29)
+- [ ] Flight steps (take off, land, hover, move) in the command model
+- [ ] Voice front end (on-device speech to text) and an LLM fallback for free-form sentences
 
 ## Acknowledgements
 

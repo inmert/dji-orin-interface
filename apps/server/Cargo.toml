@@ -11,6 +11,7 @@ name = "server"
 path = "src/main.rs"
 
 [dependencies]
+dji-commands.workspace = true
 dji-common.workspace = true
 dji-protocol = { workspace = true, features = ["serde"] }
 dji-transport.workspace = true

@@ -6,6 +6,9 @@
 //!   [`gimbal::Gimbal`] (moves, camera lock, recenter), [`thermal::Thermal`]
 //!   (XT2 settings queue and auto range) and [`motors::Motors`] (start/stop,
 //!   the USB flight unlock, live motor state).
+//! * [`executor::Executor`] — runs a [`dji_commands::Plan`] (arm, wait,
+//!   disarm…) against those features, one step at a time, with cancel and a
+//!   motor stop on failure.
 //! * [`links`] — the readers and writers that carry those features to the
 //!   aircraft: the RC gadget's bulk endpoints ([`links::rc`]) and the serial
 //!   ports ([`links::serial`]: OSDK UART and USB API port).
@@ -18,6 +21,7 @@
 //! requests spin the real motors, via the powered aircraft. Nothing is sent
 //! until a method is called; run props-off / aircraft secured.
 
+pub mod executor;
 pub mod gimbal;
 pub mod links;
 pub mod mailbox;
@@ -38,6 +42,7 @@ pub struct Vehicle {
     pub gimbal: gimbal::Gimbal,
     pub thermal: thermal::Thermal,
     pub motors: motors::Motors,
+    pub executor: executor::Executor,
 }
 
 impl Vehicle {
