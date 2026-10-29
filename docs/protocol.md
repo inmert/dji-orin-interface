@@ -397,6 +397,17 @@ after authority goes back to the RC, and stop on the stop command (FC status
 On ground → Stopped within a second). The UI's **Allow with USB** runs the
 same steps with `0x03/0x1b` on the USB port in place of the motor command.
 
+**Over the RC link (2026-10-28, verified with props off).** The app side of
+the RC link can start and stop the motors directly, with no activation and no
+control authority: DUML `App[0]` → `FlightCtrl[0]`, type `0x40`,
+**`0x03/0x2a`** ("Function Control" in dji-firmware-tools) with one byte,
+**`07` start / `08` stop** (the codes of the FC's "latest app command" list).
+The FC ACKs `00` within 0.1–0.2 s and the UART status went Stopped → On ground
+and back. DJI Pilot never sends it (it has no motor button). WS
+`{"cmd":"motors_rc","on":…}` sends it once through the injector; the reader
+logs the ACK. Tested with the USB API port connected but already unlocked;
+with the USB lock active it is untested.
+
 ## OSDK flight-data broadcast (UART)
 
 The aircraft's OSDK UART speaks DJI's Onboard SDK **OpenProtocol**, not DUML:

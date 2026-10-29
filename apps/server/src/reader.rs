@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use dji_common::logln;
 use dji_protocol::Telemetry;
-use dji_protocol::{duml, rcmux, thermal};
+use dji_protocol::{duml, flyc, rcmux, thermal};
 use dji_transport::usb;
 
 use crate::video::Feed;
@@ -93,6 +93,15 @@ pub fn run(ep1: OwnedFd, tele: Tele, feeds: Vec<Arc<Feed>>) {
                 let mut each = |f: &duml::Frame| {
                     if f.crc_ok {
                         t.update(f);
+                        if f.cmd_set == flyc::CMD_SET && f.cmd_id == flyc::CMD_ID_FUNCTION_CONTROL {
+                            logln!(
+                                "flyc: 0x03/0x2a {} seq {} type {:#04x} payload {:02x?}",
+                                duml::DevName(f.sender),
+                                f.seq,
+                                f.cmd_type,
+                                f.payload
+                            );
+                        }
                         if let Some((seq, status)) = thermal::ack(f) {
                             match status {
                                 0x00 => logln!("thermal: camera accepted seq {seq}"),

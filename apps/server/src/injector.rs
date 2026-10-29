@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use dji_common::logln;
 use dji_protocol::gimbal::{self, Camera, GimbalMove, Recenter};
-use dji_protocol::thermal;
+use dji_protocol::{flyc, thermal};
 use dji_transport::usb;
 
 use crate::INJECT_HZ;
@@ -66,6 +66,25 @@ pub fn run(ep2: OwnedFd, cmds: Shared) {
                 // Requeue unless the UI changed its mind in the meantime.
                 Sent::Retry => {
                     cmds.lock().unwrap().lock_pending.get_or_insert(on);
+                }
+                Sent::Gone => return,
+            }
+        }
+
+        // RC-link motor start/stop: sent once; the reader logs
+        // the FC's ACK.
+        let rc_motor = cmds.lock().unwrap().rc_motor_pending.take();
+        if let Some(on) = rc_motor {
+            let code = if on {
+                flyc::FUNCTION_START_MOTOR
+            } else {
+                flyc::FUNCTION_STOP_MOTOR
+            };
+            let frame_seq = seq;
+            match send(flyc::function_control_frame(code, seq), &mut seq) {
+                Sent::Ok => logln!("injector: RC-link function {code:#04x} sent (seq {frame_seq})"),
+                Sent::Retry => {
+                    cmds.lock().unwrap().rc_motor_pending.get_or_insert(on);
                 }
                 Sent::Gone => return,
             }

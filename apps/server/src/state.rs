@@ -30,6 +30,9 @@ pub struct Commands {
     thermal_in_flight: usize,
     /// Keep the isotherm band fitted to the scene ([`crate::thermal_auto`]).
     pub thermal_auto: bool,
+    /// Motor start (`true`) / stop over the RC link, sent once
+    /// by the injector as `0x03/0x2a`.
+    pub rc_motor_pending: Option<bool>,
     /// A request for [`crate::motors`], carried out once.
     pub motors_pending: Option<crate::motors::Request>,
     /// Progress and outcome of motor requests, for the UI.
@@ -193,6 +196,9 @@ pub enum WsCommand {
     /// Allow arming while the aircraft's USB API port is connected.
     #[serde(rename = "usb_flight")]
     UsbFlight,
+    /// Start/stop motors over the RC link (DUML `0x03/0x2a`).
+    #[serde(rename = "motors_rc")]
+    MotorsRc { on: bool },
 }
 
 /// Parse one UI message and apply it to the shared state. `thermal` is the
@@ -304,6 +310,13 @@ pub fn handle(text: &str, cmds: &Shared, thermal: Option<&Report>) {
             }
             c.motors_pending = Some(if on { Request::Start } else { Request::Stop });
             logln!("ws: motors {} queued", if on { "start" } else { "stop" });
+        }
+        Ok(WsCommand::MotorsRc { on }) => {
+            cmds.lock().unwrap().rc_motor_pending = Some(on);
+            logln!(
+                "ws: RC-link motors {} queued",
+                if on { "start" } else { "stop" }
+            );
         }
         Ok(WsCommand::UsbFlight) => {
             use crate::motors::Request;
