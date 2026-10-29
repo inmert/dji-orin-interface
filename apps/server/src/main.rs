@@ -33,7 +33,8 @@
 //! disables it). Defaults are chosen again on every reopen ([`ports`]).
 //! `FPV_UDT` is the FPV camera's UDT address (default `192.168.42.2:40003`;
 //! `off` disables that feed). `RC_VIDEO` maps the gimbal-camera feeds to RC
-//! mux channels (default `cam1=0x11,cam2=0x15`; `off` disables them). `RC_DUMP=<file>` appends the raw RC→Orin bytes
+//! mux channels (default `cam1=0x11,cam2=0x15`; `off` disables them; adding
+//! `fpv=0x13` takes the FPV feed from the RC instead of UDT). `RC_DUMP=<file>` appends the raw RC→Orin bytes
 //! to a file for offline analysis.
 
 mod flight;
@@ -107,6 +108,7 @@ fn video_feeds() -> video::Feeds {
                 let name = match name.trim() {
                     "cam1" => "cam1",
                     "cam2" => "cam2",
+                    "fpv" => "fpv",
                     _ => return None,
                 };
                 let ch = u8::from_str_radix(ch.trim().trim_start_matches("0x"), 16).ok()?;
@@ -114,11 +116,14 @@ fn video_feeds() -> video::Feeds {
             });
             let Some((name, ch)) = parsed else {
                 die(&format!(
-                    "RC_VIDEO: bad entry {entry:?} (want cam1=0x11,cam2=0x15)"
+                    "RC_VIDEO: bad entry {entry:?} (want cam1=0x11,cam2=0x15[,fpv=0x13])"
                 ));
             };
-            // 1280×720 streams, scaled down to keep the MJPEG light.
-            feeds.insert(name, Feed::new(name, Source::Rc(ch), Some((640, 360))));
+            // The gimbal cameras' 1280×720 streams are scaled down to keep the
+            // MJPEG light; the FPV's 608×448 keeps its size. An RC FPV feed
+            // replaces the UDT one.
+            let scale = (name != "fpv").then_some((640, 360));
+            feeds.insert(name, Feed::new(name, Source::Rc(ch), scale));
         }
     }
     feeds

@@ -279,7 +279,8 @@ hardware decoder (`nvv4l2decoder is-gdr-stream=true` → `nvvidconv` →
 `nvjpegenc`, from NVIDIA's L4T GStreamer plugins). That costs about a quarter
 of the CPU of software decoding, and each viewer gets about 5 Mbit/s per
 feed. `RC_VIDEO` maps the RC feeds to mux channels (default
-`cam1=0x11,cam2=0x15`, or `off`). `FPV_UDT` sets the FPV address, or `off`.
+`cam1=0x11,cam2=0x15`, or `off`); adding `fpv=0x13` takes the FPV feed from the
+RC link instead of UDT. `FPV_UDT` sets the FPV address, or `off`.
 `RC_DUMP=<file>` appends the raw RC→Orin bytes to a file (capped at 512 MB) for
 offline analysis; `cargo run -p dji-protocol --example rcmux_split` splits
 one into per-channel H.264. MJPEG keeps it working from any browser over plain
