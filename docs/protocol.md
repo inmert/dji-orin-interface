@@ -415,6 +415,15 @@ the UART, from the FC's `0x03/0x67` push on the RC link (first f32 = average
 motor rpm: 0 off, ~1500 idle); USB flight from the UART error field (200 seen
 in the last 10 s = locked) and the last **Allow with USB** in this USB session.
 
+## RC flight-mode switch (2026-10-28)
+
+Recorded while switching the Cendence's P/S/A switch: the OSDK broadcast's RC
+`mode` channel reads **P = +8000, S = 0, A = −8000**, and the flight mode
+(broadcast status, and `0x03/0x43` on the USB port a moment later) follows as
+**P → 6 (P-GPS), S → 31 (Sport), A → 1 (Attitude)**. Passing from P to A goes
+through S (0 / 31) for about a second. Once, right after a server restart, the
+switch in S read 0 with mode 6 until it was moved; arming worked in both.
+
 ## OSDK flight-data broadcast (UART)
 
 The aircraft's OSDK UART speaks DJI's Onboard SDK **OpenProtocol**, not DUML:

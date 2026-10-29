@@ -296,6 +296,8 @@ pub fn mode_name(v: u8) -> &'static str {
         12 => "Auto landing",
         15 => "Go home",
         17 => "SDK control",
+        // RC switch in S (verified 2026-10-28; "GPS sport" in DJI's list).
+        31 => "Sport",
         33 => "Forced landing",
         40 => "Search",
         41 => "Engine start",
@@ -566,5 +568,11 @@ mod tests {
         bad.pop();
         assert!(matches!(d.apply(&bad), Err(Error::Layout { len: 264, .. })));
         assert_eq!(d, FlightData::default());
+    }
+
+    #[test]
+    fn names_the_rc_switch_modes() {
+        // P, A and S positions as seen live on 2026-10-28.
+        assert_eq!([mode_name(6), mode_name(1), mode_name(31)], ["P-GPS", "Attitude", "Sport"]);
     }
 }

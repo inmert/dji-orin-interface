@@ -211,7 +211,10 @@ for (const disabled of [false, true]) {
     unmount();
   }
 }
-console.log('PASS: reconnect isolation, stale telemetry, disabled movement, joystick drag/clamp/dead zone/pointer ownership, keyboard release, stop, blur, hidden tab, unmount');
+const { modeSwitch } = load('src/telemetry/FlightPanel.tsx', harness().react);
+assert.deepEqual([8000, 0, -8000].map(modeSwitch), ['P', 'S', 'A'], 'RC mode switch positions');
+
+console.log('PASS: reconnect isolation, stale telemetry, disabled movement, joystick drag/clamp/dead zone/pointer ownership, keyboard release, stop, blur, hidden tab, unmount, mode switch');
 
 // Search must accept exactly the hex IDs shown in the table.
 const tableHooks = harness();

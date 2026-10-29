@@ -15,6 +15,14 @@ const range = (m: number) => (m >= 100 ? "clear" : `${fixed(m, 2)} m`);
 
 const COMPASS = ["Normal", "Needs calibration", "Needs direction fix", "Needs restart"];
 
+/** The RC's flight-mode switch from its channel value (P +8000, S 0, A −8000;
+ * verified 2026-10-28). */
+export function modeSwitch(v: number) {
+  if (v > 4000) return "P";
+  if (v < -4000) return "A";
+  return "S";
+}
+
 /** A centred stick bar, ±10000 → ±50% of the track. */
 function Stick({ label, value }: { label: string; value: number }) {
   const v = Math.max(-10000, Math.min(10000, value)) / 10000;
@@ -81,7 +89,7 @@ function Tiles({ d }: { d: FlightData }) {
         {o && <Row label="Left / right" value={`${range(o.left)} / ${range(o.right)}`} />}
         {o && <Row label="Up" value={range(o.up)} />}
       </Tile>
-      <Tile label="RC STICKS" value={d.rc ? "" : "—"}>
+      <Tile label="RC STICKS" value={d.rc ? "" : "—"} note={d.rc ? `Mode switch: ${modeSwitch(d.rc.mode)}` : undefined}>
         {d.rc && (
           <>
             <Stick label="Roll" value={d.rc.roll} />
