@@ -30,8 +30,10 @@ pub struct Commands {
     thermal_in_flight: usize,
     /// Keep the isotherm band fitted to the scene ([`crate::thermal_auto`]).
     pub thermal_auto: bool,
-    /// Motor start (`true`) / stop over the RC link, sent once
-    /// by the injector as `0x03/0x2a`.
+    /// Motor start (`true`) / stop over the RC link, sent once by the
+    /// injector as `0x03/0x2a`. Set only by [`crate::motors`] (never straight
+    /// from a UI message), which owns the retries, the ACK wait and the
+    /// "a stop is never replaced by a start" rule.
     pub rc_motor_pending: Option<bool>,
     /// The sequence number the injector sent the last RC-link motor frame
     /// with, for [`crate::motors`] to match the FC's ACK.
@@ -196,14 +198,12 @@ pub enum WsCommand {
     /// Fit the isotherm band to the scene automatically, or stop doing so.
     #[serde(rename = "thermal_auto")]
     ThermalAuto { on: bool },
-    /// Start (`on`) or stop all motors over the OSDK UART.
+    /// Start (`on`) or stop all motors: over the RC link when it is up, else
+    /// the OSDK UART ([`crate::motors`]).
     Motors { on: bool },
     /// Allow arming while the aircraft's USB API port is connected.
     #[serde(rename = "usb_flight")]
     UsbFlight,
-    /// Start/stop motors over the RC link (DUML `0x03/0x2a`).
-    #[serde(rename = "motors_rc")]
-    MotorsRc { on: bool },
 }
 
 /// Parse one UI message and apply it to the shared state. `thermal` is the
@@ -251,10 +251,12 @@ pub fn handle(text: &str, cmds: &Shared, thermal: Option<&Report>) {
             c.thermal_pending.retain(|t| {
                 !matches!(t, ThermalCmd::Spot(..) | ThermalCmd::Measure(Measure::Spot))
             });
-            // The camera rejects a spot unless it is in spot measurement, which
-            // also ends area-based auto range.
+            // A spot ends auto range, whatever the camera is measuring right
+            // now: otherwise auto would switch it back to area measurement
+            // within a second and the spot would be lost.
+            c.thermal_auto = false;
+            // The camera rejects a spot unless it is in spot measurement.
             if thermal.is_none_or(|r| r.measure != Measure::Spot as u8) {
-                c.thermal_auto = false;
                 c.thermal_pending.push(ThermalCmd::Measure(Measure::Spot));
             }
             c.thermal_pending.push(ThermalCmd::Spot(x, y));
@@ -315,13 +317,6 @@ pub fn handle(text: &str, cmds: &Shared, thermal: Option<&Report>) {
             }
             c.motors_pending = Some(if on { Request::Start } else { Request::Stop });
             logln!("ws: motors {} queued", if on { "start" } else { "stop" });
-        }
-        Ok(WsCommand::MotorsRc { on }) => {
-            cmds.lock().unwrap().rc_motor_pending = Some(on);
-            logln!(
-                "ws: RC-link motors {} queued",
-                if on { "start" } else { "stop" }
-            );
         }
         Ok(WsCommand::UsbFlight) => {
             use crate::motors::Request;
@@ -491,8 +486,11 @@ mod tests {
             ]
         );
         let cmds: Shared = Arc::default();
+        cmds.lock().unwrap().thermal_auto = true;
         handle(r#"{"cmd":"spot","x":0.5,"y":0.5}"#, &cmds, Some(&r));
         assert_eq!(pending(&cmds), [ThermalCmd::Spot(0.5, 0.5)]);
+        // Already in spot mode: the spot still ends auto range.
+        assert!(!cmds.lock().unwrap().thermal_auto);
     }
 
     #[test]
@@ -620,5 +618,8 @@ mod tests {
         handle_t(r#"{"cmd":"motors","on":true}"#, &cmds);
         handle_t(r#"{"cmd":"usb_flight"}"#, &cmds);
         assert_eq!(cmds.lock().unwrap().motors_pending, Some(Request::Stop));
+        // No UI message reaches the injector's RC motor slot directly.
+        handle_t(r#"{"cmd":"motors_rc","on":true}"#, &cmds);
+        assert_eq!(cmds.lock().unwrap().rc_motor_pending, None);
     }
 }

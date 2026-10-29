@@ -67,9 +67,10 @@ crates/
     src/gimbal.rs               gimbal feature: ids, Camera addressing
     src/gimbal/command.rs       move + camera-lock frames we inject
     src/gimbal/attitude.rs      attitude report decode (0.1° units; yaw verified)
-    src/flyc.rs, src/flyc/osd.rs  flight controller 0x03/0x43 report decode
-    src/osdk.rs                 OSDK OpenProtocol (0xAA) framing, decode-only
+    src/flyc.rs, src/flyc/osd.rs  flight controller: 0x03/0x43 report decode, motor + USB-flight frames
+    src/osdk.rs                 OSDK OpenProtocol (0xAA) framing
     src/osdk/broadcast.rs       OSDK flight-data broadcast decode
+    src/osdk/command.rs         activation, control authority, motor requests + ACK codes
     src/rcmux.rs                RC USB packet mux demuxer (DUML + camera video channels)
     src/thermal.rs              XT2 thermal core: 0xF2 report decode, 0xF1 settings frames
     src/telemetry.rs            link snapshot for the web UI
@@ -82,7 +83,7 @@ crates/
     src/aoa.rs                  Android Open Accessory constants + DJI identity
     src/aoa/host.rs             Orin as AOA host (toward a tablet)
     src/aoa/device.rs           Orin as AOA device (toward the RC)
-    src/serial.rs               receive-only serial port (OSDK UART)
+    src/serial.rs               serial ports: RxPort (read-only) + TxPort (one command at a time)
   udt/                        INFRASTRUCTURE — UDT4 client for camera video
     vendor/udt4/                UDT 4.11 from DJI's Onboard SDK (BSD licence)
     shim.cpp, build.rs          C API over it, built with the system C++ compiler
@@ -99,6 +100,7 @@ apps/
     src/reader.rs               decodes RC telemetry (ep1), hands video channels to video.rs
     src/ports.rs                default serial ports for the direct readers (re-picked on reopen)
     src/flight.rs               direct aircraft readers: OSDK UART + USB API port (rx only)
+    src/motors.rs               motor start/stop + USB flight unlock (RC link first, then the UART)
     src/video.rs                camera video: RC mux / UDT H.264 → NVDEC → MJPEG, on demand
     src/thermal_auto.rs         thermal auto range (fits the isotherm band to the scene)
     src/ws.rs / http.rs         WebSocket + static file server
@@ -110,7 +112,8 @@ docs/                         protocol and hardware notes
 ```
 
 Each aircraft feature gets its own module in `dji-protocol` (`gimbal`, `flyc`,
-`thermal`); `osdk` and `rcmux` are decode-only wire formats. Where a feature
+`thermal`); `rcmux` is a decode-only wire format and `osdk` decodes the UART
+broadcast and builds the few commands the motor path sends. Where a feature
 goes both ways, the frames we inject are kept apart from the reports the
 aircraft pushes up: `gimbal` has `command` and `attitude` submodules, and
 `thermal` keeps its settings frames and its `Report` decoder in one file. A
@@ -406,7 +409,9 @@ its mount's heading and the video stream described above (see
 - [ ] Thermal auto range: verify the latest setup fix on the aircraft
 - [ ] Isotherm enable/disable command (capture from Pilot)
 - [ ] Smoother browser video (frame pacing)
-- [ ] Send/inject flight commands to the aircraft
+- [x] Motor start/stop from the portal: over the RC link (`0x03/0x2a`) and the OSDK UART
+      (activation + control authority), with the USB flight unlock (2026-10-28, props off)
+- [ ] Send/inject flight commands beyond motor start/stop
 
 ## Acknowledgements
 

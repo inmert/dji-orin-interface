@@ -403,9 +403,9 @@ control authority: DUML `App[0]` → `FlightCtrl[0]`, type `0x40`,
 **`0x03/0x2a`** ("Function Control" in dji-firmware-tools) with one byte,
 **`07` start / `08` stop** (the codes of the FC's "latest app command" list).
 The FC ACKs `00` within 0.1–0.2 s and the UART status went Stopped → On ground
-and back. DJI Pilot never sends it (it has no motor button). WS
-`{"cmd":"motors_rc","on":…}` sends it once through the injector; the reader
-logs the ACK. Tested with the USB API port connected but already unlocked;
+and back. DJI Pilot never sends it (it has no motor button). The server's
+motor path (`apps/server/src/motors.rs`) hands it to the injector, which
+sends it once; the reader logs the ACK. Tested with the USB API port connected but already unlocked;
 with the USB lock active it is untested.
 
 The portal's **Arm**/**Disarm** buttons use this path whenever the RC link is

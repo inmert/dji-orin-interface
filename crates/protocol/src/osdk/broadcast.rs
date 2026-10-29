@@ -573,6 +573,9 @@ mod tests {
     #[test]
     fn names_the_rc_switch_modes() {
         // P, A and S positions as seen live on 2026-10-28.
-        assert_eq!([mode_name(6), mode_name(1), mode_name(31)], ["P-GPS", "Attitude", "Sport"]);
+        assert_eq!(
+            [mode_name(6), mode_name(1), mode_name(31)],
+            ["P-GPS", "Attitude", "Sport"]
+        );
     }
 }

@@ -266,6 +266,14 @@ pub fn parse(buf: &[u8]) -> Result<(Frame<'_>, usize), ParseError> {
     ))
 }
 
+/// How far to advance past a parsed frame: its whole length when the frame
+/// CRC holds, else one byte. A stray `0x55` passes the header CRC-8 one time
+/// in 256, and trusting its length would skip up to [`MAX_LEN`] bytes of real
+/// frames; the bad frame is still reported, so loggers can show it.
+fn step(f: &Frame, n: usize) -> usize {
+    if f.crc_ok { n } else { 1 }
+}
+
 /// Scan a buffer for frames (resynchronising on `0x55`), calling `cb` per frame.
 /// Returns the number of frames reported. For a live stream split across reads,
 /// use [`Decoder`] instead, which reassembles frames across buffer boundaries.
@@ -281,7 +289,7 @@ pub fn scan(buf: &[u8], mut cb: impl FnMut(&Frame)) -> usize {
             Ok((f, n)) => {
                 cb(&f);
                 found += 1;
-                i += n;
+                i += step(&f, n);
             }
             Err(ParseError::NeedMore) => break, // truncated frame at buffer end
             Err(ParseError::Invalid) => i += 1, // false SOF, resync
@@ -324,7 +332,7 @@ impl Decoder {
                 Ok((f, n)) => {
                     cb(&f);
                     found += 1;
-                    i += n;
+                    i += step(&f, n);
                 }
                 Err(ParseError::NeedMore) => break,
                 Err(ParseError::Invalid) => i += 1,
@@ -465,6 +473,26 @@ mod tests {
             }
         });
         assert_eq!(valid, 1);
+    }
+
+    #[test]
+    fn bad_frame_crc_does_not_swallow_the_frame_behind_it() {
+        // A stray SOF whose header CRC-8 happens to hold claims 40 bytes; the
+        // real frame starts 20 bytes in and must still be found.
+        let mut junk = vec![0x55, 40, 0x04, 0];
+        junk[3] = crc8(&junk[0..3]);
+        junk.resize(20, 0xAA);
+        let stream = [&junk[..], &F2[..], &[0; 10]].concat();
+        let mut valid = 0;
+        let mut bad = 0;
+        scan(&stream, |f| if f.crc_ok { valid += 1 } else { bad += 1 });
+        assert_eq!((valid, bad), (1, 1));
+        let mut d = Decoder::new();
+        d.push(&stream);
+        let mut valid = 0;
+        d.drain(|f| valid += usize::from(f.crc_ok));
+        assert_eq!(valid, 1);
+        assert_eq!(d.buffered(), 0);
     }
 
     #[test]

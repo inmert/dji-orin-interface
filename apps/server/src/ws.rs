@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tungstenite::Message;
+use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 
 use dji_common::logln;
 use dji_protocol::Telemetry;
@@ -30,6 +31,47 @@ struct Snapshot<'a> {
     thermal_auto: bool,
     /// Motor start/stop progress ([`crate::motors`]).
     motors: crate::motors::Status,
+}
+
+/// The host part of a `Host` header or an `Origin` URL, without the port:
+/// `orin:8081` and `http://orin:8080/` both give `orin`.
+fn host_of(value: &str) -> &str {
+    let value = value.split_once("://").map_or(value, |(_, rest)| rest);
+    let value = value.split('/').next().unwrap_or("");
+    if let Some(end) = value.strip_prefix('[').and_then(|v| v.find(']')) {
+        &value[..end + 2]
+    } else {
+        value.rsplit_once(':').map_or(value, |(host, _)| host)
+    }
+}
+
+/// Whether a client may open the socket. Browsers always send `Origin`, and
+/// WebSockets are exempt from the same-origin policy, so without this check
+/// any web page open on a LAN machine could send commands (arm the motors).
+/// A client that sends no `Origin` is not a browser page and is allowed.
+fn origin_allowed(host: Option<&str>, origin: Option<&str>) -> bool {
+    match (host, origin) {
+        (_, None) => true,
+        (Some(h), Some(o)) => host_of(h).eq_ignore_ascii_case(host_of(o)),
+        (None, Some(_)) => false,
+    }
+}
+
+// The signature is tungstenite's handshake callback; the error type is theirs.
+#[allow(clippy::result_large_err)]
+fn check_origin(req: &Request, resp: Response) -> Result<Response, ErrorResponse> {
+    let header = |name| req.headers().get(name).and_then(|v| v.to_str().ok());
+    if origin_allowed(header("host"), header("origin")) {
+        return Ok(resp);
+    }
+    logln!(
+        "ws: refused origin {:?} (host {:?})",
+        header("origin").unwrap_or(""),
+        header("host").unwrap_or("")
+    );
+    let mut refused = ErrorResponse::new(Some("origin not allowed".into()));
+    *refused.status_mut() = tungstenite::http::StatusCode::FORBIDDEN;
+    Err(refused)
 }
 
 /// Accept WebSocket clients forever, one thread each.
@@ -62,7 +104,7 @@ fn client(stream: TcpStream, cmds: Shared, tele: Tele, feeds: Arc<Feeds>) {
         logln!("ws: cannot set timeouts for {peer}: {e}");
         return;
     }
-    let mut ws = match tungstenite::accept(stream) {
+    let mut ws = match tungstenite::accept_hdr(stream, check_origin) {
         Ok(ws) => ws,
         Err(e) => {
             logln!("ws: handshake with {peer} failed: {e}");
@@ -114,4 +156,29 @@ fn client(stream: TcpStream, cmds: Shared, tele: Tele, feeds: Arc<Feeds>) {
     }
     cmds.lock().unwrap().release_all();
     logln!("ws: client {peer} gone; gimbals released");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{host_of, origin_allowed};
+
+    #[test]
+    fn origin_must_match_the_host_the_page_came_from() {
+        assert_eq!(host_of("orin:8081"), "orin");
+        assert_eq!(host_of("http://orin:8080/"), "orin");
+        assert_eq!(host_of("http://[fe80::1]:8080"), "[fe80::1]");
+        assert_eq!(host_of("192.168.1.5"), "192.168.1.5");
+        assert!(origin_allowed(Some("orin:8081"), Some("http://orin:8080")));
+        assert!(origin_allowed(Some("ORIN:8081"), Some("http://orin:8080")));
+        assert!(origin_allowed(Some("orin:8081"), None)); // not a browser page
+        assert!(!origin_allowed(
+            Some("orin:8081"),
+            Some("http://evil.example")
+        ));
+        assert!(!origin_allowed(
+            Some("orin:8081"),
+            Some("http://orin.example:8080")
+        ));
+        assert!(!origin_allowed(None, Some("http://orin:8080")));
+    }
 }

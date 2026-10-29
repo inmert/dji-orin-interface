@@ -4,9 +4,11 @@
 //!
 //! * [`duml`] — transport-agnostic framing, checksums, reassembly, addressing.
 //! * [`gimbal`] — camera-mount commands we inject + attitude reports.
-//! * [`flyc`] — flight controller reports (attitude, flight mode).
+//! * [`flyc`] — flight controller reports (attitude, flight mode) and the
+//!   motor-control / USB-flight frames.
 //! * [`osdk`] — the Onboard SDK OpenProtocol (0xAA) the aircraft's OSDK UART
-//!   speaks; decode-only, for its flight-data broadcast.
+//!   speaks: its flight-data broadcast, and the few requests the motor path
+//!   sends (activation, control authority, start/stop).
 //! * [`rcmux`] — the RC's USB packet mux (DUML + plain H.264 camera video).
 //! * [`thermal`] — the thermal camera's spot meter, display mode and report.
 //! * [`telemetry`] — the link snapshot, folding in each feature's reports.

@@ -5,9 +5,11 @@
 //! From the bulk streams it decodes telemetry ([`reader`]) and injects gimbal
 //! commands ([`injector`]). A web front end ([`http`]) talks to it over a
 //! WebSocket ([`ws`]): telemetry down, gimbal commands up ([`state`]).
-//! Independently, [`flight`] reads what the aircraft pushes on its own ports,
-//! receive-only: the OSDK UART broadcast (attitude, velocity, GPS, battery,
-//! status) and the DUML reports on its USB API port (attitude, flight mode).
+//! Independently, [`flight`] reads what the aircraft pushes on its own ports:
+//! the OSDK UART broadcast (attitude, velocity, GPS, battery, status) and the
+//! DUML reports on its USB API port (attitude, flight mode). Those readers
+//! never send; only [`motors`] does, on the UI's explicit request, over the
+//! RC link first and else the UART (with the USB port for the flight unlock).
 //! [`video`] decodes the cameras' H.264 on the Orin's hardware decoder and
 //! streams it to the browser as MJPEG while someone watches: the gimbal
 //! cameras from the RC's USB mux, the FPV camera over UDT on the aircraft's
@@ -15,8 +17,8 @@
 //!
 //! ```text
 //!   browser  ──HTTP :8080 / WS :8081──  server (Orin, gadget)  ──USB──  RC ── aircraft
-//!                                              ├──── OSDK UART (rx only) ────────┤
-//!                                              ├──── USB API port (rx only) ─────┤
+//!                                              ├──── OSDK UART (rx; motors tx) ──┤
+//!                                              ├──── USB API port (rx; unlock tx)┤
 //!                                              └──── USB network, UDT video ─────┘
 //! ```
 //!
@@ -180,7 +182,7 @@ fn main() {
         std::thread::spawn(move || motors::run(cmds, tele, app_id));
     }
 
-    // Direct aircraft ports: receive-only, independent of the RC link. An env
+    // Direct aircraft ports: read here, independent of the RC link. An env
     // var fixes the port (`off` disables the reader); unset, [`ports`] picks
     // one on every open attempt.
     let fixed = |var| std::env::var(var).ok();
