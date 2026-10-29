@@ -82,9 +82,9 @@ mountpoint -q "$FFS" || mount -t functionfs dji "$FFS"
 # 4. Start the server (writes descriptors, serves HTTP :8080 + HTTPS :8443).
 : > "$LOG"
 export TLS_CERT_DIR="${TLS_CERT_DIR:-$REPO/certs}"
-# Voice: whisper.cpp lives in the invoking user's home, not root's.
-USER_HOME="$(getent passwd "${SUDO_USER:-$USER}" | cut -d: -f6)"
-export WHISPER_DIR="${WHISPER_DIR:-$USER_HOME/repos/third_party/whisper.cpp}"
+# Voice: the online speech-recognition key, read from a file so it never
+# sits in a shell history (see README "Hold to talk").
+export STT_KEY_FILE="${STT_KEY_FILE:-$REPO/secrets/openai.key}"
 "$DAEMON" "$FFS" "$WEB_ROOT" >> "$LOG" 2>&1 &
 DAEMON_PID=$!
 echo "$DAEMON_PID" > /run/ffs_capture.pid

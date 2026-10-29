@@ -4,6 +4,9 @@
 # Self-signed TLS certificate the server generates on first start
 certs/
 
+# API keys for the online services (speech recognition)
+secrets/
+
 # Capture logs / sample data
 *.log
 logs/

@@ -113,7 +113,7 @@ apps/
     src/http.rs                 HTTP(S) on one port each: files, video, /ws upgrade, POST /voice
     src/ws.rs                   the WebSocket: snapshots down, portal messages up
     src/tls.rs                  self-signed certificate for the HTTPS listener (browser microphone)
-    src/voice.rs                voice upload → ffmpeg → whisper-cli on the GPU → text
+    src/voice.rs                voice upload → online speech recognition (OpenAI) → text
 web/                          Vite + React + TypeScript front end (built to web/dist)
 scripts/                      gadget bring-up/teardown + run_{capture,bridge,server}.sh
 logs/                         run-script logs (git-ignored)
@@ -335,14 +335,16 @@ first. Verified on the aircraft with `arm for 3 seconds then disarm`
 the 3 s, then Stopped.
 
 **Hold to talk.** The same bar has a **Talk** button: hold it, speak, release,
-and the sentence appears in the box already checked. Speech is transcribed
-on the Orin by [whisper.cpp](https://github.com/ggml-org/whisper.cpp) on the
-GPU (nothing leaves the machine); build it once with
-`scripts/setup_whisper.sh` (clones to `~/repos/third_party/whisper.cpp`,
-fetches the `base.en` and `small.en` models; `WHISPER_CLI` / `WHISPER_MODEL`
-point the server elsewhere). The browser's recording goes to `POST /voice`,
-`ffmpeg` makes it 16 kHz WAV, `whisper-cli` returns the text. Browsers only
-open the microphone on a secure origin, so use the HTTPS listener:
+and the sentence appears in the box already checked. The browser's recording
+goes to the server (`POST /voice`), which forwards it to an online
+speech-recognition service and returns the text; the Orin itself does no
+speech decoding, only the validation and execution of the resulting command.
+The provider is OpenAI's transcription API (`gpt-4o-transcribe`; `STT_MODEL`
+changes it), given the command vocabulary as context. Put the API key, one
+line, in `secrets/openai.key` (git-ignored; `STT_KEY_FILE` or
+`OPENAI_API_KEY` override) and restart the server; only the server holds the
+key. Browsers only open the microphone on a secure origin, so use the HTTPS
+listener:
 `https://<orin-ip>:8443/`, with a self-signed certificate the server
 generates on first start into `certs/` (accept the browser's warning once;
 `TLS=off` disables the listener). The WebSocket is served on the same port
@@ -470,8 +472,8 @@ its mount's heading and the video stream described above (see
       (activation + control authority), with the USB flight unlock (2026-10-28, props off)
 - [x] Text command plans (arm / wait / disarm) run on the aircraft from the portal (2026-10-29)
 - [x] Gimbal steps (pan, tilt, recenter, link) in the command model
-- [x] Voice input: hold-to-talk in the portal, whisper.cpp on the Orin's GPU (2026-10-29; an 11 s clip
-      transcribes in 1.3 s as WAV or browser WebM/Opus)
+- [x] Voice input: hold-to-talk in the portal, transcribed by an online service (OpenAI); the
+      on-device whisper.cpp path was tried first (2026-10-29) and dropped for accuracy
 - [ ] Flight steps (take off, land, hover, move) in the command model
 - [ ] An LLM fallback for free-form sentences, producing the plan JSON
 

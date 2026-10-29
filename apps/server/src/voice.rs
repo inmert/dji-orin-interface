@@ -1,17 +1,15 @@
-//! Voice transcription on the Orin: a recording uploaded by the portal
-//! (whatever the browser's `MediaRecorder` produced) is converted to 16 kHz
-//! mono WAV with `ffmpeg` and transcribed by whisper.cpp's `whisper-cli` on
-//! the GPU. One transcription runs at a time.
+//! Voice transcription for the portal's hold-to-talk: the browser's
+//! recording (whatever its `MediaRecorder` produced) is forwarded to an
+//! online speech-recognition service and the text comes back. Nothing is
+//! decoded on the Orin; it only validates and runs the resulting command.
 //!
-//! `WHISPER_DIR` is the whisper.cpp checkout (`scripts/setup_whisper.sh`
-//! builds it; default `~/repos/third_party/whisper.cpp`), and `WHISPER_CLI`
-//! / `WHISPER_MODEL` override the binary and model paths individually.
+//! Providers ([`Provider`]): OpenAI's transcription API today. The key is
+//! read from `STT_KEY_FILE` (default `secrets/openai.key`, one line) or
+//! `OPENAI_API_KEY`; `STT_MODEL` picks the model (`gpt-4o-transcribe`).
+//! The browser never sees the key: the server is the only caller.
 
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -22,39 +20,66 @@ use dji_common::logln;
 const PROMPT: &str = "Drone commands: arm, disarm, stop, wait, seconds, pan, tilt, \
                       camera, left, right, up, down, recenter, link, unlink.";
 
+const TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Serialize)]
 pub struct Transcript {
     pub text: String,
-    /// Transcription time, ms (conversion included).
+    /// Round trip to the service, ms.
     pub ms: u64,
 }
 
-struct Config {
-    cli: PathBuf,
-    model: PathBuf,
+/// An online speech-recognition service.
+pub enum Provider {
+    OpenAi { key: String, model: String },
 }
 
-fn config() -> &'static Config {
-    static CONFIG: OnceLock<Config> = OnceLock::new();
-    CONFIG.get_or_init(|| {
-        let base = std::env::var_os("WHISPER_DIR").map_or_else(
-            || {
-                let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
-                PathBuf::from(home).join("repos/third_party/whisper.cpp")
-            },
-            PathBuf::from,
-        );
-        let from_env =
-            |var: &str, default: PathBuf| std::env::var_os(var).map_or(default, PathBuf::from);
-        Config {
-            cli: from_env("WHISPER_CLI", base.join("build/bin/whisper-cli")),
-            model: from_env("WHISPER_MODEL", base.join("models/ggml-base.en.bin")),
+impl Provider {
+    /// Transcribe one recording of media type `content_type`.
+    fn transcribe(&self, audio: &[u8], content_type: &str) -> Result<String, String> {
+        match self {
+            Provider::OpenAi { key, model } => openai(key, model, audio, content_type),
         }
-    })
+    }
 }
 
-/// File extension for the upload's media type (ffmpeg sniffs the content;
-/// the extension only helps it along).
+fn provider() -> Option<&'static Provider> {
+    static PROVIDER: OnceLock<Option<Provider>> = OnceLock::new();
+    PROVIDER
+        .get_or_init(|| {
+            let key = std::env::var("OPENAI_API_KEY")
+                .ok()
+                .or_else(|| {
+                    let file = std::env::var("STT_KEY_FILE")
+                        .unwrap_or_else(|_| "secrets/openai.key".into());
+                    std::fs::read_to_string(&file).ok()
+                })
+                .map(|k| k.trim().to_string())
+                .filter(|k| !k.is_empty())?;
+            let model = std::env::var("STT_MODEL").unwrap_or_else(|_| "gpt-4o-transcribe".into());
+            logln!("voice: online transcription with OpenAI {model}");
+            Some(Provider::OpenAi { key, model })
+        })
+        .as_ref()
+}
+
+/// Transcribe `audio` (an upload of type `content_type`).
+pub fn transcribe(audio: &[u8], content_type: &str) -> Result<Transcript, String> {
+    if audio.is_empty() {
+        return Err("empty recording".into());
+    }
+    let provider = provider().ok_or(
+        "no speech-recognition key: put an OpenAI API key in secrets/openai.key (or set OPENAI_API_KEY) and restart",
+    )?;
+    let start = Instant::now();
+    let text = clean(&provider.transcribe(audio, content_type)?);
+    let ms = start.elapsed().as_millis() as u64;
+    logln!("voice: {ms} ms, {} bytes: {text:?}", audio.len());
+    Ok(Transcript { text, ms })
+}
+
+/// File extension for the upload's media type (the service sniffs the
+/// content; the name only helps it along).
 fn extension(content_type: &str) -> &'static str {
     let kind = content_type.split(';').next().unwrap_or("").trim();
     match kind {
@@ -66,98 +91,86 @@ fn extension(content_type: &str) -> &'static str {
     }
 }
 
-/// Transcribe `audio` (an upload of type `content_type`).
-pub fn transcribe(audio: &[u8], content_type: &str) -> Result<Transcript, String> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    static N: AtomicU64 = AtomicU64::new(0);
-    if audio.is_empty() {
-        return Err("empty recording".into());
+/// A `multipart/form-data` body with text fields and one file part.
+fn multipart(boundary: &str, fields: &[(&str, &str)], file: (&str, &str, &str, &[u8])) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (name, value) in fields {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
     }
-    let cfg = config();
-    if !cfg.cli.exists() {
-        return Err(format!(
-            "whisper-cli not found at {} (run scripts/setup_whisper.sh, or set WHISPER_CLI)",
-            cfg.cli.display()
-        ));
-    }
-    if !cfg.model.exists() {
-        return Err(format!(
-            "whisper model not found at {} (set WHISPER_MODEL)",
-            cfg.model.display()
-        ));
-    }
-    let _one_at_a_time = LOCK.lock().unwrap();
-    let start = Instant::now();
-    let stem = std::env::temp_dir().join(format!(
-        "dji-voice-{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    // Distinct names even when the upload is already a WAV.
-    let input = stem.with_extension(format!("in.{}", extension(content_type)));
-    let wav = stem.with_extension("16k.wav");
-    let cleanup = || {
-        let _ = std::fs::remove_file(&input);
-        let _ = std::fs::remove_file(&wav);
-    };
-    std::fs::write(&input, audio).map_err(|e| format!("write recording: {e}"))?;
-    let result = convert(&input, &wav).and_then(|()| run(cfg, &wav));
-    cleanup();
-    let text = result?;
-    let ms = start.elapsed().as_millis() as u64;
-    logln!("voice: {ms} ms, {} bytes: {text:?}", audio.len());
-    Ok(Transcript { text, ms })
+    let (name, filename, kind, data) = file;
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n\
+             Content-Type: {kind}\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(data);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    body
 }
 
-fn convert(input: &std::path::Path, wav: &std::path::Path) -> Result<(), String> {
-    let out = Command::new("ffmpeg")
-        .args(["-y", "-nostdin", "-loglevel", "error", "-i"])
-        .arg(input)
-        .args(["-ar", "16000", "-ac", "1", "-f", "wav"])
-        .arg(wav)
-        .output()
-        .map_err(|e| format!("cannot run ffmpeg: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "ffmpeg failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+/// OpenAI `POST /v1/audio/transcriptions`.
+fn openai(key: &str, model: &str, audio: &[u8], content_type: &str) -> Result<String, String> {
+    let boundary = format!("dji-voice-{}", std::process::id());
+    let kind = content_type
+        .split(';')
+        .next()
+        .unwrap_or("audio/webm")
+        .trim();
+    let filename = format!("speech.{}", extension(content_type));
+    let body = multipart(
+        &boundary,
+        &[
+            ("model", model),
+            ("language", "en"),
+            ("prompt", PROMPT),
+            ("response_format", "json"),
+        ],
+        ("file", &filename, kind, audio),
+    );
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(TIMEOUT))
+        .build()
+        .into();
+    let mut resp = agent
+        .post("https://api.openai.com/v1/audio/transcriptions")
+        .header("Authorization", &format!("Bearer {key}"))
+        .header(
+            "Content-Type",
+            &format!("multipart/form-data; boundary={boundary}"),
+        )
+        .send(&body[..])
+        .map_err(|e| format!("transcription request failed: {e}"))?;
+    let status = resp.status();
+    let text = resp
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| format!("transcription response unreadable: {e}"))?;
+    if !status.is_success() {
+        let detail = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v["error"]["message"].as_str().map(String::from))
+            .unwrap_or(text);
+        return Err(format!("transcription service: {status}: {detail}"));
     }
-    Ok(())
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("transcription response: {e}"))?;
+    json["text"]
+        .as_str()
+        .map(String::from)
+        .ok_or_else(|| format!("transcription response without text: {text}"))
 }
 
-fn run(cfg: &Config, wav: &std::path::Path) -> Result<String, String> {
-    let out = Command::new(&cfg.cli)
-        .arg("-m")
-        .arg(&cfg.model)
-        .arg("-f")
-        .arg(wav)
-        .args(["-l", "en", "-nt", "-np", "--prompt", PROMPT])
-        .output()
-        .map_err(|e| format!("cannot run whisper-cli: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "whisper-cli failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    Ok(clean(&String::from_utf8_lossy(&out.stdout)))
-}
-
-/// One line of plain text: whisper's bracketed non-speech tags and extra
-/// whitespace removed.
+/// One line of plain text: extra whitespace collapsed.
 fn clean(raw: &str) -> String {
-    let mut out = String::new();
-    let mut depth = 0usize;
-    for c in raw.chars() {
-        match c {
-            '[' | '(' => depth += 1,
-            ']' | ')' => depth = depth.saturating_sub(1),
-            _ if depth == 0 => out.push(c),
-            _ => {}
-        }
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -165,18 +178,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cleans_whisper_output() {
+    fn builds_a_multipart_body_and_cleans_text() {
+        let body = multipart(
+            "B",
+            &[("model", "m")],
+            ("file", "speech.webm", "audio/webm", b"\x1a\x45"),
+        );
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.starts_with(
+            "--B\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nm\r\n--B\r\n"
+        ));
+        assert!(text.contains(
+            "filename=\"speech.webm\"\r\nContent-Type: audio/webm\r\n\r\n\x1a\x45\r\n--B--\r\n"
+        ));
         assert_eq!(
-            clean("\n [BLANK_AUDIO]  Arm for five seconds, (wind)  then disarm.\n"),
-            "Arm for five seconds, then disarm."
+            clean("  Arm for five\n seconds.  "),
+            "Arm for five seconds."
         );
         assert_eq!(extension("audio/webm;codecs=opus"), "webm");
-        assert_eq!(extension("audio/wav"), "wav");
         assert_eq!(extension("audio/mp4"), "mp4");
     }
 
     #[test]
-    fn empty_recording_is_refused_before_any_process_runs() {
+    fn empty_recording_is_refused_before_any_request() {
         assert!(transcribe(&[], "audio/webm").is_err());
     }
 }

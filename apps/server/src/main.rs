@@ -10,8 +10,8 @@
 //! plain on :8080 and TLS on :8443 with a self-signed certificate
 //! ([`tls`])) and its WebSocket ([`ws`]) that streams the snapshot down and
 //! maps the portal's messages ([`portal`]) onto the vehicle's typed
-//! operations, plus voice transcription for the portal's microphone
-//! ([`voice`]).
+//! operations, plus voice input for the portal's microphone ([`voice`],
+//! forwarded to an online speech-recognition service).
 //! [`video`] decodes the cameras' H.264 on the Orin's hardware decoder and
 //! streams it to the browser as MJPEG while someone watches: the gimbal
 //! cameras from the RC's USB mux, the FPV camera over UDT on the aircraft's
@@ -44,7 +44,8 @@
 //! `fpv=0x13` takes the FPV feed from the RC instead of UDT). `RC_DUMP=<file>` appends the raw RC→Orin bytes
 //! to a file for offline analysis. `TLS_CERT_DIR` is where the self-signed
 //! certificate lives (default `certs`; `TLS=off` disables the TLS listener).
-//! `WHISPER_CLI` / `WHISPER_MODEL` locate whisper.cpp for voice input.
+//! `STT_KEY_FILE` (default `secrets/openai.key`) or `OPENAI_API_KEY` holds
+//! the speech-recognition key for voice input, and `STT_MODEL` the model.
 
 mod http;
 mod portal;
