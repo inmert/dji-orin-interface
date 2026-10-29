@@ -349,6 +349,34 @@ cmd_id=0x06 len=5` is just a periodic status push.) Built in
 [`src/gimbal/command.rs`](../crates/protocol/src/gimbal/command.rs) (`lock_frame`) and used by the web
 server's LINK toggle.
 
+## Motor start and the USB flight lock (2026-10-28)
+
+Motors started from the RC's stick combination (props off) show on the OSDK
+UART broadcast as `status.flight` 0 → 1 (motors on, on the ground) with
+display mode 41 (engine start) while the sticks are held, then 10 (assisted
+takeoff) while idling, and back to 0 when stopped. The sticks read roll
++10000, pitch/yaw/throttle −10000 during the combination. Refusals show in
+the flight controller's `0x03/0x43` on the USB port: byte 38 = start-failure
+reason (mask `0x7f`) plus a "failed" bit `0x80`; reason 72 (`0x48`) is
+"Compass Abnormal" in dji-firmware-tools.
+
+**USB lock.** While the aircraft's USB API port is connected, the flight
+controller refuses to arm (OSDK `status.error` = 200, DJI apps: "failed to
+take off with USB connection"); unplugging the cable clears it. OSDK 4.1's
+`Vehicle::setUSBFlightOn(true)` lifts it: DUML **`0x03/0x1b`** to the flight
+controller, payload `01 81 01` (u16 `0x8101` + `01` enable / `00` disable).
+The ids are only in the prebuilt `libdji-linker.a`
+(`V1ProtocolCMD::fc::usbFlightMode`). On our M210 V1 (FC firmware 3.3.10.18):
+
+- sent alone from `PC[0]` on `ttyACM0`, the flight controller ACKs `02`
+  (rejected) and the lock stays;
+- sent while OSDK 3.9 holds SDK control authority (activate, then
+  OpenProtocol `0x01/0x00` `01` on the UART; RC in P), it ACKs `00`, the
+  error field stays 0 with USB plugged in, and the RC stick combination starts
+  and stops the motors. Authority was released (`0x01/0x00` `00`) right after.
+
+Whether the setting survives an aircraft restart is untested.
+
 ## OSDK flight-data broadcast (UART)
 
 The aircraft's OSDK UART speaks DJI's Onboard SDK **OpenProtocol**, not DUML:
