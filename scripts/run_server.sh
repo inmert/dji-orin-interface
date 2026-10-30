@@ -23,7 +23,8 @@ G=/sys/kernel/config/usb_gadget
 FFS=/dev/ffs-dji
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DAEMON="$REPO/target/release/server"
-WEB_ROOT="$REPO/web/dist"
+# The server's settings; CONFIG=<file> picks another (see config.toml).
+export CONFIG="${CONFIG:-$REPO/config.toml}"
 LOG="${1:-$REPO/logs/server.log}"
 mkdir -p "$(dirname "$LOG")"
 UDC_NAME="$(ls /sys/class/udc | head -1)"
@@ -41,7 +42,7 @@ cleanup() {
 }
 
 [ -x "$DAEMON" ] || { echo "build first: cargo build --release   (missing $DAEMON)"; exit 1; }
-[ -f "$WEB_ROOT/index.html" ] || { echo "build the web UI first: (cd web && npm ci && npm run build)"; exit 1; }
+[ -f "$CONFIG" ] || { echo "no $CONFIG; the server would run on its defaults" >&2; }
 modprobe usb_f_fs 2>/dev/null || true
 
 if [ -d "$G/dji" ]; then
@@ -79,13 +80,11 @@ ln -sf "$G/dji/functions/ffs.dji" "$G/dji/configs/c.1/ffs.dji"
 mkdir -p "$FFS"
 mountpoint -q "$FFS" || mount -t functionfs dji "$FFS"
 
-# 4. Start the server (writes descriptors, serves HTTP :8080 + HTTPS :8443).
+# 4. Start the server (writes descriptors, serves HTTP :8080 + HTTPS :8443;
+#    web root, certificate and key directories come from $CONFIG, relative to
+#    it; env vars named in config.toml override single settings for this run).
 : > "$LOG"
-export TLS_CERT_DIR="${TLS_CERT_DIR:-$REPO/certs}"
-# Voice: the online speech-recognition keys (secrets/*.key), read from files
-# so they never sit in a shell history (see README "Hold to talk").
-export SECRETS_DIR="${SECRETS_DIR:-$REPO/secrets}"
-"$DAEMON" "$FFS" "$WEB_ROOT" >> "$LOG" 2>&1 &
+"$DAEMON" "$FFS" >> "$LOG" 2>&1 &
 DAEMON_PID=$!
 echo "$DAEMON_PID" > /run/ffs_capture.pid
 

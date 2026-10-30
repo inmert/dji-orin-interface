@@ -1,0 +1,73 @@
+# dji-orin-interface server settings (apps/server/src/config.rs).
+#
+# Every setting has a default (shown here), so a missing key or a missing
+# file is fine. Relative paths are relative to this file. `CONFIG=<path>`
+# names another file; the environment variable noted on a setting overrides
+# it for one run (`sudo OSDK_APP_ID=… scripts/run_server.sh`), since `sudo`
+# drops variables set before it.
+#
+# Protocol timing (DUML frame rates, ACK timeouts, USB retry periods) is
+# deliberately not here: those values were verified on the aircraft and
+# live as constants next to the code that depends on them.
+
+[web]
+http = "0.0.0.0:8080"      # the plain listener
+https = "0.0.0.0:8443"     # the TLS listener (browser microphone); "off" disables it  (TLS=off)
+root = "web/dist"          # the built front end
+cert_dir = "certs"         # self-signed certificate, generated on first start  (TLS_CERT_DIR)
+
+[secrets]
+dir = "secrets"            # one API key per *.key file  (SECRETS_DIR)
+
+[ports]
+# The aircraft's own serial ports, read-only. "auto" chooses on every reopen:
+# a CP210x USB-TTL adapter if plugged in, else the Orin's /dev/ttyTHS1; and
+# the first ttyACM that is not the CrystalSky. A device path fixes the port,
+# "off" disables the reader.
+osdk_uart = "auto"         # (OSDK_UART)
+osdk_baud = 230400         # (OSDK_BAUD)
+usb_acm = "auto"           # (USB_ACM)
+
+[motors]
+# The Onboard SDK app the UART motor path activates (an app activated once
+# with DJI Assistant 2). Unset: motor commands go over the RC link only.
+# osdk_app_id = 1234567     # (OSDK_APP_ID)
+
+[gimbal]
+cmd_type = 0x00            # DUML command-type byte of the injected gimbal frames (verified)  (GIMBAL_CMD_TYPE)
+plan_speed = 200           # move magnitude for plan steps (the portal joystick's default)
+
+[video]
+fpv_udt = "192.168.42.2:40003"   # the FPV camera over UDT on the aircraft's USB network; "off"  (FPV_UDT)
+# Gimbal-camera feeds from the RC's USB mux, by channel; add fpv = 0x13 to
+# take the FPV feed from the RC instead of UDT. An empty table disables them.
+rc = { cam1 = 0x11, cam2 = 0x15 }   # (RC_VIDEO=cam1=0x11,cam2=0x15 | off)
+# rc_dump = "logs/rc.bin"   # append the raw RC→Orin bytes here (512 MB cap)  (RC_DUMP)
+
+[speech]
+# Online speech recognition for hold-to-talk: "openai" or "deepgram"; empty
+# picks the first with a key. The model is the provider's default when empty.
+provider = ""              # (STT_PROVIDER)
+model = ""                 # (STT_MODEL)
+
+[understanding]
+# The model that turns a sentence into a plan: "anthropic", "openai" or
+# "local"; empty picks the first configured, in that order. The grammar is
+# always the fallback.
+provider = ""              # (LLM_PROVIDER)
+model = ""                 # the online model; empty is the provider's default  (LLM_MODEL)
+
+[understanding.local]
+# A model served on the Orin by an OpenAI-compatible server
+# (scripts/run_local_llm.sh). Enabled when `provider = "local"` or
+# `enabled = true`.
+enabled = false
+url = "http://127.0.0.1:8081"   # (LOCAL_LLM_URL; setting it also enables)
+model = ""                 # the model name sent; empty takes the server's  (LOCAL_LLM_MODEL)
+
+[limits]
+# What any plan may ask for, whatever produced it.
+max_wait_s = 60            # one wait step
+max_armed_s = 60           # motors running within one plan before it disarms
+max_gimbal_s = 10          # one gimbal move
+max_steps = 32

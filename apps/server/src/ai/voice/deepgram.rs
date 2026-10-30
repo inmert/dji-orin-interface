@@ -1,5 +1,5 @@
 //! Deepgram speech recognition: `POST /v1/listen` with `nova-3`
-//! (`STT_MODEL` overrides), the recording sent as the raw request body and
+//! (`[speech] model` overrides), the recording sent as the raw request body and
 //! the command vocabulary as key terms. The status check lists the key's
 //! projects to prove the key and reads the project balance.
 //!
@@ -16,10 +16,11 @@ pub struct Deepgram {
 }
 
 impl Deepgram {
-    pub fn new(key: String) -> Self {
-        let model: &'static str = match std::env::var("STT_MODEL") {
-            Ok(m) if !m.is_empty() => Box::leak(m.into_boxed_str()),
-            _ => "nova-3",
+    /// With `model`, or the default `nova-3`.
+    pub fn new(key: String, model: Option<&str>) -> Self {
+        let model: &'static str = match model {
+            Some(m) => Box::leak(m.to_string().into_boxed_str()),
+            None => "nova-3",
         };
         Self { key, model }
     }

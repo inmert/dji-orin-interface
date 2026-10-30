@@ -17,8 +17,10 @@
 //!
 //! ACKs arrive on the link readers ([`crate::links`]), which hand them to the
 //! [`Mailbox`]; UART and USB requests go out on separate write-only handles
-//! opened per request. The RC-link frame is written by the RC writer, which
-//! takes it from [`Motors::take_rc_pending`].
+//! opened per request ([`uart`]). The RC-link frame is written by the RC
+//! writer, which takes it from [`Motors::take_rc_pending`] ([`rc`]).
+//! [`live`] keeps the live motor state and the USB-lock state current from
+//! the telemetry.
 //!
 //! **This spins the real motors.** It only ever runs on an explicit UI
 //! request; props off unless flying.
@@ -30,9 +32,11 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use dji_common::logln;
-use dji_protocol::osdk::{self, command};
-use dji_protocol::{duml, flyc};
-use dji_transport::serial::TxPort;
+use dji_protocol::{duml, flyc, osdk};
+
+pub mod live;
+pub mod rc;
+pub mod uart;
 
 use crate::Vehicle;
 use crate::mailbox::Mailbox;
@@ -92,11 +96,11 @@ pub struct State {
     /// "Allow with USB" succeeded during the current USB session.
     pub usb_allowed: bool,
     /// Motor start (`true`) / stop over the RC link, for the RC writer to
-    /// send once as `0x03/0x2a`. Set only by [`via_rc`], which owns the
+    /// send once as `0x03/0x2a`. Set only by [`rc::send`], which owns the
     /// retries, the ACK wait and the "a stop beats a start" rule.
     rc_pending: Option<bool>,
     /// The sequence number the writer sent the last RC-link motor frame
-    /// with, for [`via_rc`] to match the FC's ACK.
+    /// with, for [`rc::send`] to match the FC's ACK.
     rc_sent: Option<u16>,
 }
 
@@ -192,85 +196,6 @@ impl Motors {
     }
 }
 
-/// How recent a source must be to count as live.
-const FRESH: Duration = Duration::from_secs(2);
-/// The FC flags the USB lock (error 200) only every few seconds; this long
-/// without it, with the UART live, means arming is allowed.
-const LOCK_QUIET: Duration = Duration::from_secs(10);
-/// OSDK status error code while the USB lock is on.
-const ERROR_USB_LOCK: u8 = 200;
-
-/// Keep [`Status::armed`] and [`Status::usb_flight`] current, forever.
-fn live(vehicle: &Vehicle) {
-    let (tele, motors) = (&vehicle.telemetry, &vehicle.motors);
-    let start = Instant::now();
-    // (frame count, when it last changed) per source.
-    let mut uart = (0u64, start);
-    let mut rc = (0u64, start);
-    // When the UART last came back after a gap.
-    let mut uart_since: Option<Instant> = None;
-    let mut last_lock: Option<Instant> = None;
-    let mut usb_session: Option<String> = None;
-    loop {
-        sleep(Duration::from_millis(100));
-        let (uart_frames, status, rc_frames, link_up, rpm, usb) = {
-            let t = tele.lock().unwrap();
-            (
-                t.flight.frames,
-                t.flight.data.status.clone(),
-                t.frames,
-                t.link_up,
-                t.motor_rpm,
-                t.usb.open.then(|| t.usb.port.clone()),
-            )
-        };
-        let now = Instant::now();
-        let changed = |seen: &mut (u64, Instant), count: u64| {
-            if count != seen.0 {
-                *seen = (count, now);
-            }
-        };
-        changed(&mut uart, uart_frames);
-        changed(&mut rc, rc_frames);
-        let uart_live = uart.0 > 0 && now - uart.1 < FRESH;
-        if !uart_live {
-            uart_since = None;
-        } else if uart_since.is_none() {
-            uart_since = Some(now);
-        }
-        let status = status.filter(|_| uart_live);
-        let (armed, from) = match (&status, rpm) {
-            (Some(s), _) => (Some(s.flight >= 1), Some("UART")),
-            (None, Some(r)) if link_up && now - rc.1 < FRESH => (Some(r > 0.0), Some("RC link")),
-            _ => (None, None),
-        };
-        if status.as_ref().is_some_and(|s| s.error == ERROR_USB_LOCK) {
-            last_lock = Some(now);
-        }
-        let mut m = motors.lock();
-        // A new USB session (aircraft restart, replug) forgets an earlier
-        // unlock and lock.
-        if usb != usb_session {
-            usb_session.clone_from(&usb);
-            m.usb_allowed = false;
-            last_lock = None;
-        }
-        let locked = last_lock.is_some_and(|t| now - t < LOCK_QUIET);
-        let quiet = uart_since.is_some_and(|t| now - t >= LOCK_QUIET) && !locked;
-        m.status.usb_flight = if usb.is_none() {
-            "no_usb"
-        } else if locked {
-            "locked"
-        } else if m.usb_allowed || quiet {
-            "allowed"
-        } else {
-            "unknown"
-        };
-        m.status.armed = armed;
-        m.status.armed_from = from;
-    }
-}
-
 /// Mailbox key of a DUML ACK: `0x100 + cmd_id` (OpenProtocol keys are ≤ 31).
 const DUML_KEY: u16 = 0x100;
 
@@ -279,7 +204,7 @@ const DUML_KEY: u16 = 0x100;
 pub fn run(vehicle: &std::sync::Arc<Vehicle>, app_id: Option<u32>) {
     {
         let vehicle = std::sync::Arc::clone(vehicle);
-        std::thread::spawn(move || live(&vehicle));
+        std::thread::spawn(move || live::run(&vehicle));
     }
     let motors = &vehicle.motors;
     loop {
@@ -329,27 +254,19 @@ fn set_status(motors: &Motors, busy: bool, last: &'static str, ok: Option<bool>,
     m.message = message;
 }
 
-/// How an RC-link attempt ended short of success.
-enum RcFail {
-    /// The FC answered with a refusal; the UART would be refused too.
-    Refused(String),
-    /// Nothing came back (or nothing could be sent); worth trying the UART.
-    Silent(&'static str),
-}
-
 fn execute(req: Request, vehicle: &Vehicle, app_id: Option<u32>) -> Result<String, String> {
     let mut note = "";
     if req != Request::UsbFlight && vehicle.telemetry.lock().unwrap().link_up {
-        match via_rc(req == Request::Start, &vehicle.motors) {
+        match rc::send(req == Request::Start, &vehicle.motors) {
             Ok(m) => return Ok(m),
-            Err(RcFail::Refused(e)) => return Err(e),
-            Err(RcFail::Silent(why)) => {
+            Err(rc::Fail::Refused(e)) => return Err(e),
+            Err(rc::Fail::Silent(why)) => {
                 logln!("motors: RC link: {why}; trying the UART");
                 note = why;
             }
         }
     }
-    via_uart(req, vehicle, app_id).map_err(|e| {
+    uart::send(req, vehicle, app_id).map_err(|e| {
         if note.is_empty() {
             e
         } else {
@@ -358,217 +275,11 @@ fn execute(req: Request, vehicle: &Vehicle, app_id: Option<u32>) -> Result<Strin
     })
 }
 
-/// Start/stop over the RC link: have the RC writer send `0x03/0x2a` and wait
-/// for the FC's ACK under the sequence number it went out with.
-fn via_rc(on: bool, motors: &Motors) -> Result<String, RcFail> {
-    let key = DUML_KEY + u16::from(flyc::CMD_ID_FUNCTION_CONTROL);
-    let mut sent_any = false;
-    for _ in 0..ATTEMPTS {
-        {
-            let mut m = motors.lock();
-            m.rc_sent = None;
-            m.rc_pending = Some(on);
-        }
-        let deadline = Instant::now() + Duration::from_millis(500);
-        let seq = loop {
-            if let Some(seq) = motors.lock().rc_sent.take() {
-                break Some(seq);
-            }
-            if Instant::now() >= deadline {
-                break None;
-            }
-            sleep(Duration::from_millis(10));
-        };
-        let Some(seq) = seq else {
-            // Not written (RC busy or gone); don't let it go out late.
-            motors.lock().rc_pending = None;
-            continue;
-        };
-        sent_any = true;
-        if let Some(data) = motors.mailbox.wait(key, seq, ACK_TIMEOUT) {
-            let what = if on { "started" } else { "stopped" };
-            return match data.first() {
-                Some(0) => Ok(format!("motors {what} over the RC link")),
-                _ => Err(RcFail::Refused(format!(
-                    "FC refused over the RC link (ACK {})",
-                    hex(&data)
-                ))),
-            };
-        }
-    }
-    Err(RcFail::Silent(if sent_any {
-        "no ACK from the FC"
-    } else {
-        "could not send"
-    }))
-}
-
-fn via_uart(req: Request, vehicle: &Vehicle, app_id: Option<u32>) -> Result<String, String> {
-    let app_id = app_id.ok_or("OSDK_APP_ID is not set on the server")?;
-    let (port, usb_port) = {
-        let t = vehicle.telemetry.lock().unwrap();
-        if !t.flight.open {
-            return Err("the SDK UART is not open".into());
-        }
-        (
-            t.flight.port.clone(),
-            t.usb.open.then(|| t.usb.port.clone()),
-        )
-    };
-    // Check the USB port before taking authority for nothing.
-    let usb = match req {
-        Request::UsbFlight => {
-            let p = usb_port.ok_or("the aircraft's USB port is not open")?;
-            Some((
-                TxPort::open(&p).map_err(|e| format!("cannot open {p} for writing: {e}"))?,
-                p,
-            ))
-        }
-        _ => None,
-    };
-    let tx = TxPort::open(&port).map_err(|e| format!("cannot open {port} for writing: {e}"))?;
-    let mut link = Link {
-        tx,
-        seq: initial_seq(),
-        mailbox: &vehicle.motors.mailbox,
-    };
-
-    let version = link.request("get version", command::get_version)?;
-    let fw = command::fw_version(&version).ok_or("unreadable FC version")?;
-    let code = link.code("activate", |s| command::activate(s, app_id, fw))?;
-    if code != 0 {
-        return Err(format!("activation: {}", command::activation_message(code)));
-    }
-
-    let mut code = command::OBTAIN_CONTROL_IN_PROGRESS;
-    for _ in 0..5 {
-        code = link.code("obtain control", |s| command::set_control(s, true))?;
-        if code != command::OBTAIN_CONTROL_IN_PROGRESS {
-            break;
-        }
-        sleep(Duration::from_millis(500));
-    }
-    if code != command::OBTAIN_CONTROL_SUCCESS {
-        return Err(format!(
-            "control authority: {}",
-            command::control_message(code)
-        ));
-    }
-
-    // From here on, always hand authority back, whatever the act did.
-    let acted = match (req, usb) {
-        (Request::UsbFlight, Some((tx, p))) => usb_flight(tx, &p, link.seq, link.mailbox),
-        (_, _) => {
-            let on = req == Request::Start;
-            link.request("motors", |s| command::motors(s, on))
-                .and_then(|task| {
-                    let code = command::ack_code(&task).ok_or("empty motor ACK")?;
-                    if code != 0 {
-                        return Err(format!(
-                            "FC refused ({}; ACK {})",
-                            command::task_message(code),
-                            hex(&task)
-                        ));
-                    }
-                    Ok(format!(
-                        "motors {} over the UART",
-                        if on { "started" } else { "stopped" }
-                    ))
-                })
-        }
-    };
-    let mut release = link.code("release control", |s| command::set_control(s, false));
-    for _ in 0..5 {
-        if release != Ok(command::RELEASE_CONTROL_IN_PROGRESS) {
-            break;
-        }
-        sleep(Duration::from_millis(500));
-        release = link.code("release control", |s| command::set_control(s, false));
-    }
-    let released = match release {
-        Ok(command::RELEASE_CONTROL_SUCCESS) => "control released".to_string(),
-        Ok(c) => format!("release: {}", command::control_message(c)),
-        Err(e) => format!("release: {e}"),
-    };
-    acted
-        .map(|m| format!("{m}; {released}"))
-        .map_err(|e| format!("{e}; {released}"))
-}
-
-/// Send [`flyc::usb_flight_frame`] on the USB API port and wait for the FC's
-/// DUML ACK (`00` = accepted).
-fn usb_flight(
-    mut tx: TxPort,
-    port: &str,
-    seq_base: u16,
-    mailbox: &Mailbox,
-) -> Result<String, String> {
-    for i in 0..ATTEMPTS as u16 {
-        let seq = seq_base.wrapping_add(0x4000 + i);
-        tx.send(&flyc::usb_flight_frame(seq, true))
-            .map_err(|e| format!("USB flight: write to {port} failed: {e}"))?;
-        if let Some(data) = mailbox.wait(
-            DUML_KEY + u16::from(flyc::CMD_ID_USB_FLIGHT),
-            seq,
-            ACK_TIMEOUT,
-        ) {
-            return match data.first() {
-                Some(0) => Ok("motors allowed with USB connected (until restart)".into()),
-                _ => Err(format!("USB flight: FC refused (ACK {})", hex(&data))),
-            };
-        }
-    }
-    Err("USB flight: no ACK from the FC".into())
-}
-
-/// Start each run's sequence numbers somewhere new, so a late ACK from an
-/// earlier run can't match.
-fn initial_seq() -> u16 {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    (nanos >> 8) as u16
-}
-
 fn hex(b: &[u8]) -> String {
     b.iter()
         .map(|x| format!("{x:02x}"))
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-struct Link<'a> {
-    tx: TxPort,
-    seq: u16,
-    mailbox: &'a Mailbox,
-}
-
-impl Link<'_> {
-    /// Send a request (rebuilt with a fresh sequence number on each attempt)
-    /// and return its ACK data.
-    fn request(&mut self, what: &str, build: impl Fn(u16) -> Vec<u8>) -> Result<Vec<u8>, String> {
-        for _ in 0..ATTEMPTS {
-            self.seq = self.seq.wrapping_add(1);
-            let seq = self.seq;
-            self.tx
-                .send(&build(seq))
-                .map_err(|e| format!("{what}: write failed: {e}"))?;
-            if let Some(data) = self
-                .mailbox
-                .wait(u16::from(command::SESSION_ACK), seq, ACK_TIMEOUT)
-            {
-                return Ok(data);
-            }
-        }
-        Err(format!("{what}: no ACK from the FC"))
-    }
-
-    /// [`Link::request`], reduced to the ACK's code.
-    fn code(&mut self, what: &str, build: impl Fn(u16) -> Vec<u8>) -> Result<u16, String> {
-        let data = self.request(what, build)?;
-        command::ack_code(&data).ok_or_else(|| format!("{what}: empty ACK"))
-    }
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ use serde::Deserialize;
 use dji_common::logln;
 use dji_vehicle::Vehicle;
 
-use crate::understand;
+use crate::ai::understand;
 use dji_vehicle::gimbal::{Camera, GimbalMove};
 use dji_vehicle::motors::Request;
 use dji_vehicle::thermal::{DisplayMode, Report};

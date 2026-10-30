@@ -147,7 +147,7 @@ Decoded from captured DJI Pilot traffic and implemented in the `gimbal` module
   single DJI Pilot instance only drives one gimbal at a time; our server
   addresses each independently.
 - `gimbal::command::cmd_type()` defaults to `0x00` (verified) and can be overridden at
-  runtime with `GIMBAL_CMD_TYPE`. Whether the values are a driven setpoint or a
+  runtime with `[gimbal] cmd_type` in `config.toml` (or `GIMBAL_CMD_TYPE`). Whether the values are a driven setpoint or a
   speed is not yet characterized, but the UI's hold-to-move at a fixed magnitude
   works well in practice.
 - The attitude report is `cmd_set=0x04 cmd_id=0x05`: the first three `i16`
@@ -379,7 +379,7 @@ The setting does not survive an aircraft restart (user-checked 2026-10-28), so i
 has to be sent again, with authority, after every boot.
 
 **From the portal (2026-10-28, verified with props off).** The server speaks
-this OpenProtocol itself (`osdk::command`, `crates/vehicle/src/motors.rs`), all
+this OpenProtocol itself (`osdk::command`, `crates/vehicle/src/motors/uart.rs`), all
 unencrypted on session 2, ACKs matched by sequence number (an ACK frame has no
 set/id; its data starts at byte 12):
 
@@ -404,7 +404,7 @@ control authority: DUML `App[0]` → `FlightCtrl[0]`, type `0x40`,
 **`07` start / `08` stop** (the codes of the FC's "latest app command" list).
 The FC ACKs `00` within 0.1–0.2 s and the UART status went Stopped → On ground
 and back. DJI Pilot never sends it (it has no motor button). The server's
-motor path (`crates/vehicle/src/motors.rs`) hands it to the RC writer, which
+motor path (`crates/vehicle/src/motors/rc.rs`) hands it to the RC writer, which
 sends it once; the reader logs the ACK. Tested with the USB API port connected but already unlocked;
 with the USB lock active it is untested.
 
@@ -573,7 +573,7 @@ setting, persisted, is unverified.
 
 What the RC sends the app on its bulk stream (ep1 on our gadget) is not
 encrypted: it is a two-layer mux of DUML and three plain H.264 streams
-(found 2026-10-28 from a raw capture, `RC_DUMP=<file>` on the server).
+(found 2026-10-28 from a raw capture, `[video] rc_dump` on the server).
 
 **Outer frames.** The whole stream is a chain of frames with an 8-byte header
 and no padding. In a 460 MB capture they cover every byte with no resync:

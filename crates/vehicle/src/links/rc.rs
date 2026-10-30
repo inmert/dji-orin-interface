@@ -6,12 +6,13 @@
 //! * [`write()`] — ep2 (IN, Orin → RC): streams the gimbal state and sends the
 //!   queued thermal, lock, recenter and motor frames at [`INJECT_HZ`].
 //!
-//! `RC_DUMP=<file>` also appends every raw ep1 byte to `<file>` (up to
-//! 512 MB) for offline analysis, e.g. of the non-DUML video downlink.
+//! [`read`] can also append every raw ep1 byte to a file (up to 512 MB) for
+//! offline analysis, e.g. of the non-DUML video downlink.
 
 use std::fs::File;
 use std::io::{ErrorKind, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::path::Path;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -36,15 +37,14 @@ struct Dump {
 }
 
 impl Dump {
-    fn from_env() -> Option<Self> {
-        let path = std::env::var("RC_DUMP").ok()?;
-        match File::options().create(true).append(true).open(&path) {
+    fn open(path: &Path) -> Option<Self> {
+        match File::options().create(true).append(true).open(path) {
             Ok(file) => {
-                logln!("telemetry: dumping raw ep1 to {path}");
+                logln!("telemetry: dumping raw ep1 to {}", path.display());
                 Some(Self { file, written: 0 })
             }
             Err(e) => {
-                logln!("telemetry: cannot open RC_DUMP {path}: {e}");
+                logln!("telemetry: cannot open dump {}: {e}", path.display());
                 None
             }
         }
@@ -66,20 +66,26 @@ impl Dump {
 
 /// Read until the endpoint is gone (`ENODEV`). `ESHUTDOWN` (the RC disabled the
 /// gadget, e.g. it was power-cycled) is waited out, so the reader resumes on
-/// the next ENABLE without being respawned.
+/// the next ENABLE without being respawned. `dump` is a file to append the
+/// raw bytes to, if wanted.
 ///
 /// [`rcmux`] splits the stream: DUML arrives on two separate byte streams
 /// (the mux's DUML channel, and outer frames sent outside the mux), each with
 /// its own decoder so a frame split across packets is reassembled; every
 /// other channel's payload goes to `video(channel, payload)`, which must not
 /// block (the camera feeds drop what they cannot take).
-pub fn read(ep1: OwnedFd, vehicle: &Vehicle, mut video: impl FnMut(u8, &[u8])) {
+pub fn read(
+    ep1: OwnedFd,
+    vehicle: &Vehicle,
+    dump: Option<&Path>,
+    mut video: impl FnMut(u8, &[u8]),
+) {
     let tele = &vehicle.telemetry;
     // One decoder per DUML byte stream: [mux channel, direct].
     let mut decoders = [duml::Decoder::new(), duml::Decoder::new()];
     let mut demux = rcmux::Demux::new();
     let mut buf = vec![0u8; 16384];
-    let mut dump = Dump::from_env();
+    let mut dump = dump.and_then(Dump::open);
     loop {
         match usb::read(ep1.as_fd(), &mut buf) {
             Ok(0) => sleep(Duration::from_millis(2)),

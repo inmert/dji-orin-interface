@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // --- Telemetry shapes (mirror crates/protocol/src/telemetry.rs,
-//     crates/protocol/src/gimbal/attitude.rs, and Snapshot in apps/server/src/ws.rs) ---
+//     crates/protocol/src/gimbal/attitude.rs, and Snapshot in apps/server/src/web/ws.rs) ---
 
 export interface GimbalAttitude {
   index: number;
@@ -226,7 +226,7 @@ export interface PlanStatus {
   source: string;
 }
 
-/** Motor start/stop progress (Status in apps/server/src/motors.rs). */
+/** Motor start/stop progress (Status in crates/vehicle/src/motors.rs). */
 export interface MotorStatus {
   busy: boolean;
   /** The last request. */
@@ -241,7 +241,7 @@ export interface MotorStatus {
   usb_flight?: string;
 }
 
-// --- Commands (mirror WsCommand in apps/server/src/state.rs) ---
+// --- Commands (mirror WsCommand in apps/server/src/web/portal.rs) ---
 
 export type Command =
   | { cmd: "gimbal"; camera: number; pitch: number; yaw: number; active: boolean }
@@ -347,7 +347,7 @@ export function isVideoStatus(value: unknown): value is VideoStatus {
     && counter(value.dropped) && optional(value.error, e => typeof e === "string");
 }
 
-/** The port a direct reader shows while it finds none (NO_PORT in apps/server/src/flight.rs). */
+/** The port a direct reader shows while it finds none (NO_PORT in crates/vehicle/src/links/serial.rs). */
 export const NO_PORT = "no port found";
 
 /** URL of a feed's MJPEG stream; opening it starts that feed on the server. */

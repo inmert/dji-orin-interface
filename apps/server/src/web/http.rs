@@ -1,6 +1,6 @@
 //! HTTP server, plain and over TLS: the built web front end, the camera
-//! feeds as MJPEG, the WebSocket at `/ws` ([`crate::ws`]), voice input
-//! (`POST /voice`, [`crate::voice`]) and the online services' status
+//! feeds as MJPEG, the WebSocket at `/ws` ([`super::ws`]), voice input
+//! (`POST /voice`, [`crate::ai::voice`]) and the online services' status
 //! (`GET /ai/status`, speech and understanding).
 //!
 //! Hand-rolled HTTP/1.1, one thread per connection, `Connection: close` on
@@ -11,17 +11,18 @@
 
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use openssl::ssl::{SslAcceptor, SslStream};
 
 use dji_common::logln;
-use dji_vehicle::Vehicle;
 
-use crate::video::{Feed, Feeds};
-use crate::{die, understand, voice, ws};
+use crate::ai::{understand, voice};
+use crate::die;
+use crate::video::Feed;
+use crate::web::{Context, ws};
 
 /// Longest request head (request line + headers) accepted.
 const MAX_HEAD: usize = 16 * 1024;
@@ -230,13 +231,6 @@ fn stream_video(out: &mut dyn Write, peer: &str, feed: &Arc<Feed>) {
             .is_ok();
     }
     logln!("http: {name} viewer {peer} gone");
-}
-
-/// What every connection handler shares.
-pub struct Context {
-    pub web_root: PathBuf,
-    pub feeds: Arc<Feeds>,
-    pub vehicle: Arc<Vehicle>,
 }
 
 /// Serve one connection: a WebSocket upgrade, a video stream, a voice upload

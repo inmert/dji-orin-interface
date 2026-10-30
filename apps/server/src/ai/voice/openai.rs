@@ -1,5 +1,5 @@
 //! OpenAI speech recognition: `POST /v1/audio/transcriptions` with
-//! `gpt-4o-transcribe` (`STT_MODEL` overrides), given the command vocabulary
+//! `gpt-4o-transcribe` (`[speech] model` overrides), given the command vocabulary
 //! as a prompt. OpenAI's API exposes no balance; the status check asks
 //! `GET /v1/models` to prove the key.
 
@@ -13,10 +13,11 @@ pub struct OpenAi {
 }
 
 impl OpenAi {
-    pub fn new(key: String) -> Self {
-        let model: &'static str = match std::env::var("STT_MODEL") {
-            Ok(m) if !m.is_empty() => Box::leak(m.into_boxed_str()),
-            _ => "gpt-4o-transcribe",
+    /// With `model`, or the default `gpt-4o-transcribe`.
+    pub fn new(key: String, model: Option<&str>) -> Self {
+        let model: &'static str = match model {
+            Some(m) => Box::leak(m.to_string().into_boxed_str()),
+            None => "gpt-4o-transcribe",
         };
         Self { key, model }
     }

@@ -5,9 +5,10 @@
 //!
 //! Providers sit behind [`Provider`] so the service can be chosen or swapped
 //! without touching the callers: [`openai`] (`gpt-4o-transcribe`) and
-//! [`deepgram`] (`nova-3`). Keys come from [`crate::online`] (`secrets/`);
-//! `STT_PROVIDER` picks the provider, by default the first configured of
-//! `openai`, `deepgram`.
+//! [`deepgram`] (`nova-3`). Keys come from [`super::online`] (`secrets/`);
+//! `config.toml` `[speech]` (`STT_PROVIDER` / `STT_MODEL`) picks the
+//! provider, by default the first configured of `openai`, `deepgram`, and
+//! the model.
 //!
 //! [`statuses`] checks each key against its service and reports spend or
 //! balance where the service exposes one.
@@ -22,7 +23,7 @@ use serde::Serialize;
 
 use dji_common::logln;
 
-pub use crate::online::{agent, clean, error_detail, read};
+pub use super::online::{agent, clean, error_detail, read};
 
 /// How long a status check (key, balance) is reused before asking again.
 const STATUS_TTL: Duration = Duration::from_secs(60);
@@ -74,19 +75,18 @@ pub struct Registry {
 }
 
 impl Registry {
-    fn from_env() -> Self {
-        let keys = crate::online::keys();
+    fn new(wanted: Option<&str>, model: Option<&str>) -> Self {
+        let keys = super::online::keys();
         let mut providers: Vec<Box<dyn Provider>> = Vec::new();
         if let Some(k) = keys.openai.clone() {
-            providers.push(Box::new(openai::OpenAi::new(k)));
+            providers.push(Box::new(openai::OpenAi::new(k, model)));
         }
         if let Some(k) = keys.deepgram.clone() {
-            providers.push(Box::new(deepgram::Deepgram::new(k)));
+            providers.push(Box::new(deepgram::Deepgram::new(k, model)));
         }
-        let wanted = std::env::var("STT_PROVIDER").ok();
         let active = providers
             .iter()
-            .position(|p| wanted.as_deref().is_none_or(|w| w == p.name()));
+            .position(|p| wanted.is_none_or(|w| w == p.name()));
         if let (Some(w), None) = (&wanted, active) {
             logln!("voice: STT_PROVIDER={w} is not configured (no key)");
         }
@@ -132,9 +132,16 @@ impl Registry {
     }
 }
 
+static REGISTRY: OnceLock<Registry> = OnceLock::new();
+
+/// Choose the providers from the settings, once, at start (after
+/// [`super::online::init`]).
+pub fn init(cfg: &crate::config::Speech) {
+    let _ = REGISTRY.set(Registry::new(cfg.provider(), cfg.model()));
+}
+
 fn registry() -> &'static Registry {
-    static R: OnceLock<Registry> = OnceLock::new();
-    R.get_or_init(Registry::from_env)
+    REGISTRY.get_or_init(|| Registry::new(None, None))
 }
 
 /// Transcribe `audio` (an upload of type `content_type`) with the active

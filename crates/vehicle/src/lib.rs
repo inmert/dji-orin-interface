@@ -50,6 +50,15 @@ impl Vehicle {
         Arc::new(Self::default())
     }
 
+    /// A vehicle whose executor checks plans against `limits` and drives
+    /// gimbal steps at `gimbal_speed`.
+    pub fn with_limits(limits: dji_commands::Limits, gimbal_speed: i16) -> Arc<Self> {
+        Arc::new(Self {
+            executor: executor::Executor::new(limits, gimbal_speed),
+            ..Self::default()
+        })
+    }
+
     /// A copy of the telemetry snapshot.
     pub fn snapshot(&self) -> Telemetry {
         self.telemetry.lock().unwrap().clone()

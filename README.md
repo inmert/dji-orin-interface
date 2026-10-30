@@ -96,7 +96,8 @@ crates/
     src/executor.rs             runs a Plan step by step: progress, cancel, motors stopped on failure
     src/gimbal.rs               desired move per camera, camera lock, yaw recenters
     src/thermal.rs, thermal/auto.rs  XT2 settings queue; auto range fits the isotherm band
-    src/motors.rs               motor start/stop + USB flight unlock (RC link first, then the UART)
+    src/motors.rs, motors/      motor requests + status; rc.rs (0x03/0x2a over the RC link),
+                                uart.rs (OSDK activation/authority sequence, USB unlock), live.rs (armed state)
     src/mailbox.rs              ACKs from the readers, matched by sequence for a waiting request
     src/links/rc.rs             RC gadget: reads ep1 (telemetry + video channels), writes ep2
     src/links/serial.rs         direct aircraft readers: OSDK UART + USB API port (rx only)
@@ -106,22 +107,31 @@ apps/
     src/bin/aoa_capture.rs      Orin as the controller toward DJI Pilot
     src/bin/bridge.rs           transparent DUML MITM (both roles at once)
   server/                     PRESENTATION — web control server (bin `server`)
-    src/main.rs                 gadget event loop, starts the vehicle's link workers
-    src/portal.rs               the portal's WebSocket messages → Vehicle operations
+    src/main.rs                 start-up: settings, the vehicle, the workers, then the gadget loop
+    src/config.rs               config.toml + the env overrides; the only place the environment is read
+    src/gadget.rs               gadget ep0 event loop; starts the RC link workers on ENABLE
     src/ports.rs                default serial ports for the direct readers (re-picked on reopen)
     src/video.rs                camera video: RC mux / UDT H.264 → NVDEC → MJPEG, on demand
-    src/http.rs                 HTTP(S) on one port each: files, video, /ws upgrade, POST /voice
-    src/ws.rs                   the WebSocket: snapshots down, portal messages up
-    src/tls.rs                  self-signed certificate for the HTTPS listener (browser microphone)
-    src/online.rs               API keys from secrets/ (by prefix or file name) + HTTP helpers
-    src/voice.rs, voice/*.rs    voice upload → chosen speech service (OpenAI, Deepgram) → text; status
-    src/understand.rs, understand/*.rs  sentence → plan: online model (Anthropic, OpenAI), grammar fallback
+    src/web.rs, web/            the browser side
+      http.rs                     HTTP(S) on one port each: files, video, /ws upgrade, POST /voice
+      ws.rs                       the WebSocket: snapshots down, portal messages up
+      portal.rs                   the portal's WebSocket messages → Vehicle operations
+      tls.rs                      self-signed certificate for the HTTPS listener (browser microphone)
+    src/ai.rs, ai/              the services behind the command bar
+      online.rs                   API keys from secrets/ (by prefix or file name) + HTTP helpers
+      voice.rs, voice/*.rs        voice upload → chosen speech service (OpenAI, Deepgram) → text; status
+      understand.rs, understand/* sentence → plan: Anthropic, OpenAI, or llama-server on the Orin; grammar fallback
 web/                          Vite + React + TypeScript front end (built to web/dist)
-scripts/                      gadget bring-up/teardown + run_{capture,bridge,server}.sh
+scripts/                      gadget bring-up/teardown + run_{capture,bridge,server}.sh, run_local_llm.sh
+config.toml                   the server's settings, every value at its default (see Configuration)
 logs/                         run-script logs (git-ignored)
 docs/                         protocol and hardware notes
 .github/workflows/ci.yml      fmt, clippy, tests, docs, web build
 ```
+
+Every crate and module folder carries a `README.md` saying what it is for,
+what each file holds and the rule the folder follows; the tree above is the
+map, those are the detail.
 
 Each aircraft feature gets its own module in `dji-protocol` (`gimbal`, `flyc`,
 `thermal`); `rcmux` is a decode-only wire format and `osdk` decodes the UART
@@ -259,6 +269,20 @@ within seconds. Two ways it fails silently (the log stops at `gadget: BIND`):
   Replugging doesn't clear this; power-cycle the RC with the cable unplugged,
   then plug in after it boots.
 
+**Configuration.** Everything the server can be told lives in
+[`config.toml`](config.toml) at the repository root: listeners and web root,
+the secrets directory, serial ports, the Onboard SDK app id, gimbal frame
+settings, video feeds, the speech and understanding providers and models,
+and the plan limits. Every key is optional and the checked-in file holds the
+defaults, so it doubles as the reference (a test keeps the two equal). Relative
+paths are relative to the file; `CONFIG=<file>` names another one, which
+`run_server.sh` exports as `$REPO/config.toml`. The environment variable noted
+beside each key (`OSDK_APP_ID`, `OSDK_UART`, `LLM_PROVIDER`, …) overrides it
+for one run, which is what the `sudo VAR=… scripts/run_server.sh` examples below
+do; the server reads the environment nowhere else. Protocol timing (frame rates,
+ACK timeouts) is deliberately not configurable: those values were verified on the
+aircraft.
+
 **Restarting without replugging.** Once the RC link is up, restart the server
 (new build, other env vars) with the RC left plugged in:
 
@@ -316,12 +340,13 @@ sudo OSDK_APP_ID=<app id> scripts/run_server.sh
 bar. Type a sentence such as `arm for 5 seconds then disarm`, press **Check**
 to see the steps the server made of it, then **Run** (asks for confirmation);
 **Cancel** stops a running plan after its current step. Understanding the
-sentence is an online model's job first (`apps/server/src/understand.rs`:
-Claude through Anthropic's API, or OpenAI; the first with a key in
-`secrets/` is used, `LLM_PROVIDER` / `LLM_MODEL` choose), asked for the
-plan as structured output against a fixed schema, so free-form phrasing
-works. The local grammar (`crates/commands`) is the fallback when no model
-is configured or the call fails, and understands:
+sentence is a model's job first (`apps/server/src/ai/understand.rs`:
+Claude through Anthropic's API, OpenAI, or a model served on the Orin, see
+below; the first with a key in `secrets/` is used, `LLM_PROVIDER` /
+`LLM_MODEL` choose), asked for the plan as structured output against a
+fixed schema, so free-form phrasing works. The local grammar
+(`crates/commands`) is the fallback when no model is configured or the call
+fails, and understands:
 
 - motors: `arm` / `start motors` / `spin up`, `disarm` / `stop`; `arm for N`
   always disarms again afterwards;
@@ -346,7 +371,7 @@ and the sentence appears in the box already checked. The browser's recording
 goes to the server (`POST /voice`), which forwards it to an online
 speech-recognition service and returns the text; the Orin itself does no
 speech decoding, only the validation and execution of the resulting command.
-The services sit behind one interface (`apps/server/src/voice.rs`), so the
+The services sit behind one interface (`apps/server/src/ai/voice.rs`), so the
 provider is a choice: **OpenAI** (`gpt-4o-transcribe`) or **Deepgram**
 (`nova-3`), each given the command vocabulary as context. Put the API key,
 one line, in `secrets/openai.key` or `secrets/deepgram.key` (git-ignored;
@@ -394,7 +419,7 @@ of the CPU of software decoding, and each viewer gets about 5 Mbit/s per
 feed. `RC_VIDEO` maps the RC feeds to mux channels (default
 `cam1=0x11,cam2=0x15`, or `off`); adding `fpv=0x13` takes the FPV feed from the
 RC link instead of UDT. `FPV_UDT` sets the FPV address, or `off`.
-`RC_DUMP=<file>` appends the raw RC→Orin bytes to a file (capped at 512 MB) for
+`[video] rc_dump` (or `RC_DUMP=<file>`) appends the raw RC→Orin bytes to a file (capped at 512 MB) for
 offline analysis; `cargo run -p dji-protocol --example rcmux_split` splits
 one into per-channel H.264. MJPEG keeps it working from any browser over plain
 HTTP, where in-browser H.264 decoding (WebCodecs) would need HTTPS.

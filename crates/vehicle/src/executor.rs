@@ -20,8 +20,8 @@ use crate::Vehicle;
 use crate::gimbal::{Camera, GimbalMove};
 use crate::motors::Request;
 
-/// Gimbal move magnitude for plan steps, the portal joystick's default.
-const GIMBAL_SPEED: i16 = 200;
+/// Default gimbal move magnitude for plan steps, the portal joystick's default.
+pub const GIMBAL_SPEED: i16 = 200;
 
 /// How long one motor step may take (the motor path tries the RC link,
 /// then the UART's activation sequence).
@@ -50,14 +50,31 @@ pub struct Status {
     pub source: String,
 }
 
-#[derive(Default)]
 pub struct Executor {
     status: Mutex<Status>,
     cancel: AtomicBool,
     limits: Limits,
+    gimbal_speed: i16,
+}
+
+impl Default for Executor {
+    fn default() -> Self {
+        Self::new(Limits::default(), GIMBAL_SPEED)
+    }
 }
 
 impl Executor {
+    /// An executor checking plans against `limits` and driving gimbal steps
+    /// at `gimbal_speed`.
+    pub fn new(limits: Limits, gimbal_speed: i16) -> Self {
+        Self {
+            status: Mutex::default(),
+            cancel: AtomicBool::new(false),
+            limits,
+            gimbal_speed,
+        }
+    }
+
     pub fn status(&self) -> Status {
         self.status.lock().unwrap().clone()
     }
@@ -189,8 +206,8 @@ fn run(vehicle: &Vehicle, plan: Plan) {
                 seconds,
             } => {
                 let yaw = match direction {
-                    Horizontal::Left => -GIMBAL_SPEED,
-                    Horizontal::Right => GIMBAL_SPEED,
+                    Horizontal::Left => -ex.gimbal_speed,
+                    Horizontal::Right => ex.gimbal_speed,
                 };
                 let mv = GimbalMove {
                     pitch: 0,
@@ -205,8 +222,8 @@ fn run(vehicle: &Vehicle, plan: Plan) {
                 seconds,
             } => {
                 let pitch = match direction {
-                    Vertical::Up => GIMBAL_SPEED,
-                    Vertical::Down => -GIMBAL_SPEED,
+                    Vertical::Up => ex.gimbal_speed,
+                    Vertical::Down => -ex.gimbal_speed,
                 };
                 let mv = GimbalMove {
                     pitch,

@@ -14,9 +14,9 @@ use dji_common::logln;
 use dji_protocol::Telemetry;
 use dji_vehicle::Vehicle;
 
-use crate::http::Conn;
-use crate::portal;
 use crate::video::{self, Feeds, VideoStatus};
+use crate::web::http::Conn;
+use crate::web::portal;
 
 /// What the server broadcasts to the UI: the telemetry snapshot plus the current
 /// link state, so a freshly-loaded or refreshed page reflects the real state.
@@ -78,7 +78,7 @@ fn check_origin(req: &Request, resp: Response) -> Result<Response, ErrorResponse
 }
 
 /// One WebSocket client on an accepted connection (its request head still
-/// unread, see [`crate::http::Replay`]): stream telemetry down, apply
+/// unread, see [`super::http::Replay`]): stream telemetry down, apply
 /// commands up. On any exit (disconnect, error) release every gimbal — a
 /// dead-man stop.
 pub fn client<C: Conn>(stream: C, peer: String, vehicle: &Arc<Vehicle>, feeds: &Feeds) {

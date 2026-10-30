@@ -1,18 +1,26 @@
 //! Understanding: turning a sentence (typed or transcribed) into a
-//! [`Plan`]. An online model does it first ([`Provider`]: [`anthropic`],
-//! [`openai`]), since it copes with phrasing the local grammar does not;
-//! the grammar ([`dji_commands::grammar`]) is the fallback when no model is
-//! configured or the call fails. Either way the Orin validates the plan
+//! [`Plan`]. A model does it first ([`Provider`]: [`anthropic`],
+//! [`openai`] online, or [`local`], a model served on the Orin), since it
+//! copes with phrasing the local grammar does not; the grammar
+//! ([`dji_commands::grammar`]) is the fallback when no model is configured
+//! or the call fails. Either way the Orin validates the plan
 //! against its limits before anything runs, and a plan typed as JSON
 //! (`{"steps":[…]}`) skips both.
 //!
 //! The model is asked for the plan as structured output against
 //! [`schema`], one flat step shape (such schemas allow no recursion), which
 //! [`plan_from_json`] turns into a [`Plan`]. Keys come from
-//! [`crate::online`]; `LLM_PROVIDER` picks the provider, by default the
-//! first configured of `anthropic`, `openai`; `LLM_MODEL` the model.
+//! [`super::online`]; `config.toml` `[understanding]` (`LLM_PROVIDER`,
+//! `LLM_MODEL`) picks the provider, by default the first configured of
+//! `anthropic`, `openai`, `local`, and the online model. The local provider
+//! is configured under `[understanding.local]` (`LOCAL_LLM_URL`) and is
+//! last unless chosen: the online model was the more accurate on the test
+//! sentences (see the README).
 
 pub mod anthropic;
+#[cfg(test)]
+mod bench;
+pub mod local;
 pub mod openai;
 
 use std::sync::{Mutex, OnceLock};
@@ -52,7 +60,8 @@ pub trait Provider: Send + Sync {
     fn status(&self) -> Status;
 }
 
-/// A plan and where it came from (`claude-opus-5-5`, `grammar`, `json`).
+/// A plan and where it came from (`claude-opus-5-5`, a GGUF's name,
+/// `grammar`, `json`).
 pub struct Interpreted {
     pub plan: Plan,
     pub source: String,
@@ -65,24 +74,32 @@ struct Registry {
 }
 
 impl Registry {
-    fn from_env() -> Self {
-        let keys = crate::online::keys();
+    fn new(cfg: &crate::config::Understanding) -> Self {
+        let keys = super::online::keys();
+        let model = cfg.model();
         let mut providers: Vec<Box<dyn Provider>> = Vec::new();
         if let Some(k) = keys.anthropic.clone() {
             providers.push(Box::new(anthropic::Anthropic::new(
                 k,
                 keys.anthropic_admin.clone(),
+                model,
             )));
         }
         if let Some(k) = keys.openai.clone() {
-            providers.push(Box::new(openai::OpenAi::new(k)));
+            providers.push(Box::new(openai::OpenAi::new(k, model)));
         }
-        let wanted = std::env::var("LLM_PROVIDER").ok();
+        if cfg.local.enabled {
+            providers.push(Box::new(local::Local::new(
+                cfg.local.url.clone(),
+                cfg.local.model().map(String::from),
+            )));
+        }
+        let wanted = cfg.provider();
         let active = providers
             .iter()
-            .position(|p| wanted.as_deref().is_none_or(|w| w == p.name()));
-        if let (Some(w), None) = (&wanted, active) {
-            logln!("understand: LLM_PROVIDER={w} is not configured (no key)");
+            .position(|p| wanted.is_none_or(|w| w == p.name()));
+        if let (Some(w), None) = (wanted, active) {
+            logln!("understand: provider {w} is not configured (no key, or not a provider)");
         }
         logln!(
             "understand: model providers [{}]; using {}",
@@ -125,9 +142,16 @@ impl Registry {
     }
 }
 
+static REGISTRY: OnceLock<Registry> = OnceLock::new();
+
+/// Choose the providers from the settings, once, at start (after
+/// [`super::online::init`]).
+pub fn init(cfg: &crate::config::Understanding) {
+    let _ = REGISTRY.set(Registry::new(cfg));
+}
+
 fn registry() -> &'static Registry {
-    static R: OnceLock<Registry> = OnceLock::new();
-    R.get_or_init(Registry::from_env)
+    REGISTRY.get_or_init(|| Registry::new(&crate::config::Understanding::default()))
 }
 
 /// Status of every configured provider (`GET /ai/status`).

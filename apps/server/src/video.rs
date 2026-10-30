@@ -1,6 +1,6 @@
 //! Live camera video: raw H.264 from the aircraft, decoded on the Orin's
 //! hardware decoder to JPEG frames for the browser (MJPEG at
-//! `/video/<feed>.mjpg`, see [`crate::http`]).
+//! `/video/<feed>.mjpg`, see [`crate::web::http`]).
 //!
 //! Two sources, both plain H.264 byte streams (Annex B):
 //! * [`Source::Udt`] — the FPV camera over UDT on the aircraft's USB network
@@ -333,6 +333,30 @@ impl Input {
 
 /// The server's feeds by name, as the UI and the HTTP routes know them.
 pub type Feeds = BTreeMap<&'static str, Arc<Feed>>;
+
+/// The feeds `[video]` configures (see `config.toml`). Nothing is opened
+/// until a viewer subscribes.
+pub fn feeds(cfg: &crate::config::Video) -> Result<Feeds, String> {
+    let mut feeds = Feeds::new();
+    if let Some(addr) = cfg.fpv()? {
+        // 608×448 already: keep the stream's own size.
+        feeds.insert("fpv", Feed::new("fpv", Source::Udt(addr), None));
+    }
+    for (name, &ch) in &cfg.rc {
+        let name: &'static str = match name.as_str() {
+            "cam1" => "cam1",
+            "cam2" => "cam2",
+            "fpv" => "fpv",
+            other => return Err(format!("video.rc: no feed {other:?} (cam1, cam2, fpv)")),
+        };
+        // The gimbal cameras' 1280×720 streams are scaled down to keep the
+        // MJPEG light; the FPV's 608×448 keeps its size. An RC FPV feed
+        // replaces the UDT one.
+        let scale = (name != "fpv").then_some((640, 360));
+        feeds.insert(name, Feed::new(name, Source::Rc(ch), scale));
+    }
+    Ok(feeds)
+}
 
 /// Status of every feed, for the WebSocket snapshot.
 pub fn statuses(feeds: &Feeds) -> BTreeMap<&'static str, VideoStatus> {

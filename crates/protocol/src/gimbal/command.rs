@@ -20,21 +20,20 @@ use super::{CMD_ID_LOCK, CMD_ID_LOCK_AUX, CMD_ID_MOVE, CMD_SET, CMD_SET_SYNC, Ca
 use crate::duml::{self, Device, Header};
 
 /// Default command-type byte for gimbal commands (`0x00`, verified on
-/// hardware). `GIMBAL_CMD_TYPE` overrides it at runtime (e.g.
-/// `GIMBAL_CMD_TYPE=0x40`) so trying values needs no recompile.
+/// hardware). [`set_cmd_type`] changes it at runtime (the server's
+/// `[gimbal] cmd_type`) so trying values needs no recompile.
 pub const CMD_TYPE_DEFAULT: u8 = 0x00;
 
-/// The command-type byte to use, read once from `GIMBAL_CMD_TYPE` (hex, with or
-/// without `0x`) or [`CMD_TYPE_DEFAULT`].
+static CMD_TYPE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(CMD_TYPE_DEFAULT);
+
+/// The command-type byte the move and recenter frames carry.
 pub fn cmd_type() -> u8 {
-    use std::sync::OnceLock;
-    static CT: OnceLock<u8> = OnceLock::new();
-    *CT.get_or_init(|| {
-        std::env::var("GIMBAL_CMD_TYPE")
-            .ok()
-            .and_then(|s| u8::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok())
-            .unwrap_or(CMD_TYPE_DEFAULT)
-    })
+    CMD_TYPE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Change the command-type byte for every frame built from now on.
+pub fn set_cmd_type(ct: u8) {
+    CMD_TYPE.store(ct, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Payload flag: a move is active.

@@ -1,14 +1,16 @@
 //! What the online services share: the API keys in `secrets/` and a few HTTP
-//! helpers. Speech ([`crate::voice`]) and understanding
-//! ([`crate::understand`]) build on this.
+//! helpers. Speech ([`super::voice`]) and understanding
+//! ([`super::understand`]) build on this.
 //!
-//! Keys are read from `secrets/*.key` (`SECRETS_DIR`), one key per file,
+//! Keys are read from the secrets directory (`config.toml` `[secrets] dir`,
+//! `SECRETS_DIR`), one key per file,
 //! and recognised by prefix (`sk-ant-admin…` Anthropic admin, `sk-ant-…`
 //! Anthropic, `sk-…` OpenAI) or else by file name (`deepgram.key`), so a
 //! key lands with its service whatever the file is called.
 //! `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `DEEPGRAM_API_KEY` override.
 //! The browser never sees a key: the server is the only caller.
 
+use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -27,17 +29,23 @@ pub struct Keys {
     pub anthropic_admin: Option<String>,
 }
 
-/// The keys, read once.
+static KEYS: OnceLock<Keys> = OnceLock::new();
+
+/// Read the keys in `dir` once, at start. Without this call there are none
+/// (tests), unless the environment names some.
+pub fn init(dir: &Path) {
+    let _ = KEYS.set(Keys::load(dir));
+}
+
+/// The keys [`init`] found.
 pub fn keys() -> &'static Keys {
-    static K: OnceLock<Keys> = OnceLock::new();
-    K.get_or_init(Keys::load)
+    KEYS.get_or_init(|| Keys::load(Path::new("")))
 }
 
 impl Keys {
-    fn load() -> Self {
+    fn load(dir: &Path) -> Self {
         let mut keys = Self::default();
-        let dir = std::env::var("SECRETS_DIR").unwrap_or_else(|_| "secrets".into());
-        let mut files: Vec<_> = std::fs::read_dir(&dir)
+        let mut files: Vec<_> = std::fs::read_dir(dir)
             .into_iter()
             .flatten()
             .flatten()

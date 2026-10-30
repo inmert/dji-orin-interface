@@ -6,7 +6,7 @@
 //! (`sk-ant-admin…`, in `secrets/` too) — a workspace key is refused there.
 
 use super::{INSTRUCTIONS, Provider, Status, plan_from_json, schema};
-use crate::online::{agent, error_detail, read};
+use crate::ai::online::{agent, error_detail, read};
 use dji_commands::Plan;
 
 const API: &str = "https://api.anthropic.com/v1";
@@ -19,11 +19,9 @@ pub struct Anthropic {
 }
 
 impl Anthropic {
-    pub fn new(key: String, admin_key: Option<String>) -> Self {
-        let model = std::env::var("LLM_MODEL")
-            .ok()
-            .filter(|m| !m.is_empty())
-            .unwrap_or_else(|| "claude-opus-5-5".into());
+    /// With `model`, or the default `claude-opus-5-5`.
+    pub fn new(key: String, admin_key: Option<String>, model: Option<&str>) -> Self {
+        let model = model.unwrap_or("claude-opus-5-5").to_string();
         Self {
             key,
             admin_key,
