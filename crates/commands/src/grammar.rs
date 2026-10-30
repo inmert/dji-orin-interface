@@ -5,8 +5,14 @@
 //! Sentences are clauses joined by `then`, `and`, `,` or `;`:
 //!
 //! * `arm` / `start motors` / `spin up`
-//! * `arm for 5 seconds` — arm, wait, and disarm again (a following
-//!   `then disarm` is folded in, not doubled)
+//! * `arm for 5 seconds` — arm, wait, and disarm again
+//!
+//! The parser tracks the motor state through the sentence: an `arm` while
+//! armed or a `disarm` while disarmed is dropped, so `arm for 5 seconds
+//! then disarm` does not ask the FC to stop motors that are already stopped
+//! (it would refuse). A comma splits clauses only when a command verb
+//! follows it, so a transcriber's `pan camera two, left for two seconds`
+//! stays one clause.
 //! * `disarm` / `stop motors` / `stop`
 //! * `wait 3 seconds` / `hold for 2 s` / `wait a minute`
 //! * `pan left 2 seconds` / `pan camera 2 right for 1 s` / `look up 3 s` /
@@ -46,18 +52,16 @@ impl std::error::Error for ParseError {}
 
 /// Parse a sentence into a plan (unvalidated: check it against `Limits`).
 pub fn parse(text: &str) -> Result<Plan, ParseError> {
-    let mut steps = Vec::new();
-    let mut implicit_disarm = false;
+    let mut steps: Vec<Command> = Vec::new();
     let mut any = false;
     for clause in clauses(text) {
         any = true;
         let words: Vec<&str> = clause.split_whitespace().collect();
         let unknown = || ParseError::UnknownClause(clause.clone());
         let bad_duration = || ParseError::BadDuration(clause.clone());
-        let mut after_motor_wait = false;
         match words.as_slice() {
             ["arm"] | ["arm", "motors"] | ["start", "motors"] | ["spin", "up"] | ["start"] => {
-                steps.push(Command::Arm);
+                push_motor(&mut steps, Command::Arm);
             }
             ["arm", "for", rest @ ..]
             | ["arm", "motors", "for", rest @ ..]
@@ -65,20 +69,16 @@ pub fn parse(text: &str) -> Result<Plan, ParseError> {
             | ["spin", "up", "for", rest @ ..]
             | ["spin", "for", rest @ ..] => {
                 let seconds = duration(rest).ok_or_else(bad_duration)?;
-                steps.push(Command::Arm);
+                push_motor(&mut steps, Command::Arm);
                 steps.push(Command::Wait { seconds });
-                steps.push(Command::Disarm);
-                after_motor_wait = true;
+                push_motor(&mut steps, Command::Disarm);
             }
             ["disarm"]
             | ["disarm", "motors"]
             | ["stop"]
             | ["stop", "motors"]
             | ["spin", "down"] => {
-                if !implicit_disarm {
-                    steps.push(Command::Disarm);
-                }
-                // else: already disarmed at the end of "arm for N"
+                push_motor(&mut steps, Command::Disarm);
             }
             ["wait", rest @ ..]
             | ["hold", rest @ ..]
@@ -108,7 +108,6 @@ pub fn parse(text: &str) -> Result<Plan, ParseError> {
             }
             _ => return Err(unknown()),
         }
-        implicit_disarm = after_motor_wait;
     }
     if !any {
         return Err(ParseError::Empty);
@@ -116,10 +115,37 @@ pub fn parse(text: &str) -> Result<Plan, ParseError> {
     Ok(Plan::new(steps))
 }
 
-/// Lower-cased clauses, split on `then` / `and` / `,` / `;`, with filler
-/// words dropped and empty clauses skipped.
+/// Words that start a clause; a comma splits clauses only before one of
+/// these (`then`, `and`, `;` and a full stop always split).
+const VERBS: &[&str] = &[
+    "arm", "start", "spin", "disarm", "stop", "wait", "hold", "pause", "sleep", "pan", "tilt",
+    "look", "turn", "move", "recenter", "center", "centre", "recentre", "link", "unlink", "lock",
+    "unlock", "please", "now",
+];
+
+/// Add an arm or disarm unless an earlier step of this plan already left
+/// the motors in that state. With no earlier motor step the real state is
+/// unknown, so the step is kept (a lone `stop` must always go out).
+fn push_motor(steps: &mut Vec<Command>, step: Command) {
+    let armed = steps.iter().rev().find_map(|s| match s {
+        Command::Arm => Some(true),
+        Command::Disarm => Some(false),
+        _ => None,
+    });
+    let redundant = matches!(
+        (&step, armed),
+        (Command::Arm, Some(true)) | (Command::Disarm, Some(false))
+    );
+    if !redundant {
+        steps.push(step);
+    }
+}
+
+/// Lower-cased clauses, split on `then` / `and` / `;` / full stops, and on
+/// commas before a command verb, with filler words dropped and empty
+/// clauses skipped.
 fn clauses(text: &str) -> Vec<String> {
-    const FILLER: &[&str] = &["please", "the", "now", "motors,", "a", "an"];
+    const FILLER: &[&str] = &["please", "the", "now", "a", "an"];
     // A full stop ends a clause, except inside a number such as `1.5`.
     let chars: Vec<char> = text.to_ascii_lowercase().chars().collect();
     let mut flat = String::with_capacity(chars.len() + 8);
@@ -128,13 +154,29 @@ fn clauses(text: &str) -> Vec<String> {
             && i > 0
             && chars[i - 1].is_ascii_digit()
             && chars.get(i + 1).is_some_and(char::is_ascii_digit);
-        if matches!(c, ',' | ';') || (c == '.' && !decimal) {
+        if c == ';' || (c == '.' && !decimal) {
             flat.push_str(" then ");
+        } else if c == ',' {
+            // Decide once the next word is known: mark it, resolve below.
+            flat.push_str(" ,");
         } else {
             flat.push(c);
         }
     }
-    flat.split_whitespace()
+    let words: Vec<&str> = flat.split_whitespace().collect();
+    let mut resolved: Vec<&str> = Vec::with_capacity(words.len());
+    for (i, w) in words.iter().enumerate() {
+        if *w == "," {
+            let next = words.get(i + 1).copied().unwrap_or("");
+            if VERBS.contains(&next) || next == "then" || next == "and" {
+                resolved.push("then");
+            }
+        } else {
+            resolved.push(w);
+        }
+    }
+    resolved
+        .into_iter()
         .map(|w| if w == "and" { "then" } else { w })
         .collect::<Vec<_>>()
         .split(|w| *w == "then")
@@ -314,10 +356,30 @@ mod tests {
         );
         assert_eq!(parse("arm"), Ok(Plan::new(vec![Arm])));
         assert_eq!(parse("stop motors"), Ok(Plan::new(vec![Disarm])));
-        // An explicit disarm after "arm for N" is not doubled, a later one is kept.
+        // Redundant motor steps are dropped: already disarmed after "arm
+        // for N", so neither later disarm is sent; a repeated arm is not either.
         assert_eq!(
             parse("arm for 2 s then disarm then wait 1 s then disarm"),
-            Ok(Plan::new(vec![Arm, wait(2.0), Disarm, wait(1.0), Disarm]))
+            Ok(Plan::new(vec![Arm, wait(2.0), Disarm, wait(1.0)]))
+        );
+        assert_eq!(
+            parse("arm, arm, wait 1 second, disarm"),
+            Ok(Plan::new(vec![Arm, wait(1.0), Disarm]))
+        );
+        // As Deepgram transcribed it: a comma inside the gimbal clause, a
+        // disarm after the motors already stopped.
+        assert_eq!(
+            parse("Arm for five seconds, then pan camera two, left for two seconds, then disarm."),
+            Ok(Plan::new(vec![
+                Arm,
+                wait(5.0),
+                Disarm,
+                Pan {
+                    camera: 2,
+                    direction: Horizontal::Left,
+                    seconds: 2.0
+                },
+            ]))
         );
     }
 
