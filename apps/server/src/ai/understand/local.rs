@@ -13,7 +13,7 @@
 //! `scripts/run_local_llm.sh` starts `llama-server` with the settings used
 //! for the measurements in the README.
 
-use super::{Provider, Status, openai};
+use super::{Provider, Status, openai, schema_compact};
 use crate::ai::online::{agent, error_detail, read};
 use dji_commands::Plan;
 
@@ -70,6 +70,8 @@ impl Provider for Local {
 
     fn interpret(&self, text: &str) -> Result<Plan, String> {
         let mut body = openai::body(&self.model, text);
+        // The grammar lets a step omit its unused fields: fewer tokens.
+        body["response_format"]["json_schema"]["schema"] = schema_compact();
         // Deterministic and bounded; the schema does the rest.
         body["temperature"] = serde_json::json!(0);
         body["max_tokens"] = serde_json::json!(MAX_TOKENS);

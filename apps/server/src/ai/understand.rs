@@ -217,10 +217,31 @@ disarm; do not add a disarm when the motors are already stopped at that point. F
 land, hover, move the aircraft) is not available: never invent steps for it. Fill every field; use \
 null for fields a step does not use. If the instruction is not one of these commands, is ambiguous, \
 or asks for something unsafe, return an empty steps list and say why in problem; otherwise problem \
-is null.";
+is null. Examples: 'arm for 5 seconds then disarm' is arm, wait 5, disarm. 'start the motors, hold \
+for ten seconds, then stop them' is arm, wait 10, disarm. 'look up for three seconds on camera 2' is \
+tilt camera 2 up 3. 'unlink and pan right for two and a half seconds' is link off, then pan camera 1 \
+right 2.5. 'recenter' alone is recenter with camera null.";
 
-/// The JSON schema the models fill: one flat step shape.
+/// The JSON schema the models fill: one flat step shape. Every field of a
+/// step is required (OpenAI's strict mode insists), so unused ones are null.
+///
+/// Key order matters: `serde_json` is built with `preserve_order` so the
+/// schema reaches the model as written, `steps` before `problem` and `cmd`
+/// first in a step. Sorted alphabetically (`camera, cmd, …`, `problem`
+/// first) Claude stopped after the first step on most multi-step sentences
+/// and the local model attached durations to the wrong step.
 pub fn schema() -> serde_json::Value {
+    let mut s = schema_compact();
+    s["properties"]["steps"]["items"]["required"] =
+        serde_json::json!(["cmd", "seconds", "camera", "direction", "on"]);
+    s
+}
+
+/// [`schema`] with only `cmd` required per step, for a server that turns
+/// the schema into a grammar ([`local`]): a step is then a few tokens
+/// instead of five nulls, which is most of a small model's output time.
+/// [`plan_from_json`] reads a missing field as null.
+pub fn schema_compact() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
@@ -238,7 +259,7 @@ pub fn schema() -> serde_json::Value {
                         ]},
                         "on": {"type": ["boolean", "null"]}
                     },
-                    "required": ["cmd", "seconds", "camera", "direction", "on"],
+                    "required": ["cmd"],
                     "additionalProperties": false
                 }
             },
@@ -338,6 +359,28 @@ mod tests {
         assert!(plan_from_json(r#"{"steps":[{"cmd":"pan","seconds":1,"camera":1,"direction":"up","on":null}],"problem":null}"#).is_err());
         assert!(plan_from_json("nonsense").is_err());
         assert!(schema()["properties"]["steps"].is_object());
+        assert_eq!(
+            schema()["properties"]["steps"]["items"]["required"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
+        assert_eq!(
+            schema_compact()["properties"]["steps"]["items"]["required"],
+            serde_json::json!(["cmd"])
+        );
+        assert_eq!(
+            plan_from_json(
+                r#"{"steps":[{"cmd":"wait","seconds":2},{"cmd":"recenter"}],"problem":null}"#
+            )
+            .unwrap()
+            .steps,
+            [
+                Command::Wait { seconds: 2.0 },
+                Command::Recenter { camera: None }
+            ]
+        );
     }
 
     #[test]

@@ -366,6 +366,31 @@ first. Verified on the aircraft with `arm for 3 seconds then disarm`
 (2026-10-29, props on): ACK 0.2 s after each step, FC status On ground for
 the 3 s, then Stopped.
 
+**A model on the Orin instead.** The same interface takes a model served
+locally by llama.cpp's `llama-server` (`scripts/run_local_llm.sh` starts it
+on the GPU; `[understanding.local]` in `config.toml` points at it,
+`provider = "local"` makes it the one used). It gets the plan schema as a
+grammar, so its output is always well-formed JSON, and the Orin validates it
+like any other. Measured 2026-10-30 on this Orin with the ignored test in
+`apps/server/src/ai/understand/bench.rs` (twelve sentences: the two from the
+first live run, the grammar's own forms, free phrasing, two flight requests
+that must be declined; every provider gets the same instructions and schema):
+
+| Provider | Right | Latency, median | Notes |
+|----------|-------|-----------------|-------|
+| Claude `claude-opus-5-5`, effort low | 12 / 12 | 2.4 s (1.6 to 6.3 s) | both flight requests declined with a reason |
+| Llama 3.2 3B Instruct Q4_K_M, GPU, 17 tok/s | 2 / 12 | 4.5 s (2.5 to 11 s) | drops the wait in `arm for N seconds`, and **invents motor and gimbal steps for "take off"** |
+| Llama 3.2 1B Instruct Q4_K_M | 2 / 12 | 3.4 s | declines almost everything, or echoes the instructions as the problem |
+
+So the online model stays the default and the local provider is a choice, not
+a recommendation, at this model size: a 3B model that answers a flight
+request with an arm step is a safety problem the limits do not catch. The
+benchmark also found why Claude had looked worse than this: `serde_json` sorts
+object keys, so the schema reached the model with `problem` before `steps`
+and `camera` before `cmd`, and Claude then stopped after the first step on
+most multi-step sentences (6 of 12 right). Building `serde_json` with
+`preserve_order` fixed it.
+
 **Hold to talk.** The same bar has a **Talk** button: hold it, speak, release,
 and the sentence appears in the box already checked. The browser's recording
 goes to the server (`POST /voice`), which forwards it to an online

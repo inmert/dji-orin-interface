@@ -31,7 +31,7 @@ dji-vehicle = { path = "crates/vehicle" }
 dji-commands = { path = "crates/commands" }
 
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 openssl = "0.10"
 ureq = "3.5.0"
 tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
