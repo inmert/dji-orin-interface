@@ -1,0 +1,328 @@
+{
+  "link_up": true,
+  "frames": 3,
+  "gimbals": {
+    "0": {
+      "index": 0,
+      "pitch": 10,
+      "roll": 0,
+      "yaw": -20,
+      "raw": "0a 00 00 00 ec ff",
+      "provisional": true
+    },
+    "2": {
+      "index": 2,
+      "pitch": 10,
+      "roll": 0,
+      "yaw": -20,
+      "raw": "0a 00 00 00 ec ff",
+      "provisional": true
+    }
+  },
+  "streams": {
+    "0x03/0x67 03>02": {
+      "from": "FlightCtrl[0]",
+      "to": "App[0]",
+      "cmd_set": 3,
+      "cmd_id": 103,
+      "count": 1,
+      "last_len": 4
+    },
+    "0x04/0x05 04>02": {
+      "from": "Gimbal[0]",
+      "to": "App[0]",
+      "cmd_set": 4,
+      "cmd_id": 5,
+      "count": 1,
+      "last_len": 6
+    },
+    "0x04/0x05 44>02": {
+      "from": "Gimbal[2]",
+      "to": "App[0]",
+      "cmd_set": 4,
+      "cmd_id": 5,
+      "count": 1,
+      "last_len": 6
+    }
+  },
+  "flight": {
+    "port": "/dev/ttyUSB0",
+    "open": true,
+    "frames": 5,
+    "rejected": 1,
+    "data": {
+      "time_ms": 532800,
+      "attitude": {
+        "roll": 1.5,
+        "pitch": -2.0,
+        "yaw": 90.0
+      },
+      "quaternion": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "acceleration": [
+        0.0,
+        0.0,
+        9.75
+      ],
+      "velocity": {
+        "x": 1.0,
+        "y": 2.0,
+        "z": -0.5,
+        "gps": true
+      },
+      "angular_rate": [
+        0.0,
+        0.25,
+        0.0
+      ],
+      "position": {
+        "latitude": 45.5,
+        "longitude": -73.5,
+        "altitude": 167.5,
+        "height": 2.5,
+        "health": 4
+      },
+      "obstacles": {
+        "down": 0.25,
+        "front": 100.0,
+        "right": 100.0,
+        "back": 3.5,
+        "left": 100.0,
+        "up": 1.75,
+        "health": 63
+      },
+      "gps": {
+        "date": 20261030,
+        "time": 224425,
+        "latitude": 45.5,
+        "longitude": -73.5,
+        "hfsl": 270.5,
+        "velocity_ned": [
+          1.0,
+          -0.5,
+          0.0
+        ],
+        "hdop": 1.25,
+        "pdop": 2.25,
+        "fix": 3.0,
+        "satellites": 12
+      },
+      "mag": [
+        101,
+        582,
+        1366
+      ],
+      "rc": {
+        "roll": 0,
+        "pitch": 10000,
+        "yaw": 0,
+        "throttle": -10000,
+        "mode": 8000,
+        "gear": 0
+      },
+      "gimbal": {
+        "roll": 0.0,
+        "pitch": -30.0,
+        "yaw": -97.5
+      },
+      "status": {
+        "flight": 1,
+        "flight_name": "On ground",
+        "mode": 6,
+        "mode_name": "P-GPS",
+        "gear": 1,
+        "gear_name": "Down",
+        "error": 0
+      },
+      "battery": {
+        "capacity": 4000,
+        "voltage": 24500,
+        "current": -1200,
+        "percent": 87
+      },
+      "compass": 0,
+      "last_flags": 32767
+    }
+  },
+  "usb": {
+    "port": "/dev/ttyACM0",
+    "open": true,
+    "frames": 3,
+    "osd": {
+      "pitch": 1.5,
+      "roll": 2.5,
+      "yaw": 143.0,
+      "mode": 6,
+      "mode_name": "P-GPS",
+      "satellites": 0,
+      "unverified": {
+        "latitude": 0.0,
+        "longitude": 0.0,
+        "height": 0.0,
+        "velocity": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "gimbals": {
+      "0": {
+        "index": 0,
+        "pitch": 10,
+        "roll": 0,
+        "yaw": -20,
+        "raw": "0a 00 00 00 ec ff",
+        "provisional": true
+      },
+      "2": {
+        "index": 2,
+        "pitch": 10,
+        "roll": 0,
+        "yaw": -20,
+        "raw": "0a 00 00 00 ec ff",
+        "provisional": true
+      }
+    }
+  },
+  "thermal": {
+    "spot_x": 0.5,
+    "spot_y": 0.5,
+    "spot_temp": 36.5,
+    "spot_valid": true,
+    "display_mode": 3,
+    "measure": 2,
+    "isotherm_enabled": true,
+    "isotherm_lower": 27,
+    "isotherm_middle": 32,
+    "isotherm_upper": 38,
+    "area": {
+      "rect": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "avg": 21.5,
+      "min": 18.25,
+      "max": 36.5,
+      "min_x": 0.25,
+      "min_y": 0.75,
+      "max_x": 0.5,
+      "max_y": 0.5
+    }
+  },
+  "motor_rpm": 1536.25,
+  "linked": true,
+  "video": {
+    "cam1": {
+      "source": "RC channel 0x11",
+      "state": "idle",
+      "viewers": 0,
+      "frames": 0,
+      "bytes": 0,
+      "dropped": 0,
+      "error": null
+    }
+  },
+  "thermal_auto": false,
+  "motors": {
+    "busy": false,
+    "last": "start",
+    "ok": true,
+    "message": "motors started over the RC link",
+    "armed": true,
+    "armed_from": "RC link",
+    "usb_flight": "no_usb"
+  },
+  "plan": {
+    "running": true,
+    "plan": {
+      "steps": [
+        {
+          "cmd": "arm"
+        },
+        {
+          "cmd": "wait",
+          "seconds": 2.5
+        },
+        {
+          "cmd": "pan",
+          "camera": 2,
+          "direction": "left",
+          "seconds": 1.0
+        },
+        {
+          "cmd": "tilt",
+          "camera": 1,
+          "direction": "up",
+          "seconds": 0.5
+        },
+        {
+          "cmd": "recenter",
+          "camera": null
+        },
+        {
+          "cmd": "recenter",
+          "camera": 2
+        },
+        {
+          "cmd": "link",
+          "on": true
+        },
+        {
+          "cmd": "disarm"
+        }
+      ]
+    },
+    "text": "the sentence",
+    "step": 2,
+    "message": "step 3: pan camera 2 Left 1 s",
+    "ok": null,
+    "preview": {
+      "steps": [
+        {
+          "cmd": "arm"
+        },
+        {
+          "cmd": "wait",
+          "seconds": 2.5
+        },
+        {
+          "cmd": "pan",
+          "camera": 2,
+          "direction": "left",
+          "seconds": 1.0
+        },
+        {
+          "cmd": "tilt",
+          "camera": 1,
+          "direction": "up",
+          "seconds": 0.5
+        },
+        {
+          "cmd": "recenter",
+          "camera": null
+        },
+        {
+          "cmd": "recenter",
+          "camera": 2
+        },
+        {
+          "cmd": "link",
+          "on": true
+        },
+        {
+          "cmd": "disarm"
+        }
+      ]
+    },
+    "preview_error": null,
+    "parsing": false,
+    "source": "grammar"
+  }
+}

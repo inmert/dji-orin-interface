@@ -548,6 +548,44 @@ mod tests {
     }
 
     #[test]
+    fn every_prefix_of_the_section_order_resolves_from_a_zero_flag_word() {
+        for k in 1..=SECTIONS.len() {
+            let flags = SECTIONS[..k].iter().fold(0, |f, (s, _)| f | s);
+            assert_eq!(
+                resolve_flags(0, body_len(flags)),
+                Some(flags),
+                "{k} sections"
+            );
+        }
+        // A body one byte off any prefix matches nothing.
+        assert_eq!(resolve_flags(0, body_len(0x0FFF) + 1), None);
+    }
+
+    #[test]
+    fn a_flagged_frame_decodes_only_its_sections() {
+        // Status and battery, as in the 0x2FFF frames, without the rest.
+        let mut p = (STATUS | BATTERY).to_le_bytes().to_vec();
+        p.extend_from_slice(&[2, 6, 1, 0]); // in air, P-GPS, gear down
+        p.extend_from_slice(&4_000u32.to_le_bytes());
+        p.extend_from_slice(&24_500i32.to_le_bytes());
+        p.extend_from_slice(&(-1_200i32).to_le_bytes());
+        p.push(87);
+        let mut d = FlightData::default();
+        assert_eq!(d.apply(&p), Ok(STATUS | BATTERY));
+        assert_eq!(d.status.as_ref().unwrap().flight_name, "In air");
+        assert_eq!(
+            d.battery,
+            Some(Battery {
+                capacity: 4_000,
+                voltage: 24_500,
+                current: -1_200,
+                percent: 87
+            })
+        );
+        assert_eq!((d.attitude, d.time_ms), (None, None));
+    }
+
+    #[test]
     fn time_only_frames_keep_the_other_sections() {
         let mut d = FlightData::default();
         d.apply(&full_payload()).unwrap();

@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "node tests/controls.cjs && node tests/video.cjs && node tests/thermal.cjs"
+    "test": "node tests/controls.cjs && node tests/video.cjs && node tests/thermal.cjs && node tests/snapshot.cjs"
   },
   "dependencies": {
     "react": "18.3.1",

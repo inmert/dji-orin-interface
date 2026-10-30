@@ -61,3 +61,89 @@ pub fn send(on: bool, motors: &Motors) -> Result<String, Fail> {
         "could not send"
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use dji_protocol::duml::{self, Device, Header};
+
+    use super::*;
+
+    /// The FC's DUML answer to a `0x03/0x2a` frame sent with `seq`.
+    fn ack(seq: u16, code: u8) -> Vec<u8> {
+        let h = Header {
+            sender: duml::addr(Device::FlightCtrl, 0),
+            receiver: duml::addr(Device::App, 0),
+            seq,
+            cmd_type: 0x80,
+            cmd_set: flyc::CMD_SET,
+            cmd_id: flyc::CMD_ID_FUNCTION_CONTROL,
+        };
+        duml::build(&h, &[code]).unwrap()
+    }
+
+    /// Plays the RC writer and the FC: takes each motor frame, reports it
+    /// sent, and (with `code`) answers it as the reader would.
+    fn writer(motors: &Arc<Motors>, code: Option<u8>) {
+        let motors = Arc::clone(motors);
+        std::thread::spawn(move || {
+            let mut seq = 100u16;
+            loop {
+                sleep(Duration::from_millis(5));
+                if motors.take_rc_pending().is_some() {
+                    seq += 1;
+                    motors.rc_sent(seq);
+                    if let Some(code) = code {
+                        let frame = ack(seq, code);
+                        motors.deliver_duml_ack(&duml::parse(&frame).unwrap().0);
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn an_acked_frame_succeeds_and_a_refusal_is_final() {
+        let m = Arc::new(Motors::default());
+        writer(&m, Some(0x00));
+        assert_eq!(
+            send(true, &m).ok(),
+            Some("motors started over the RC link".to_string())
+        );
+        let m = Arc::new(Motors::default());
+        writer(&m, Some(0x05));
+        match send(false, &m) {
+            Err(Fail::Refused(e)) => assert!(e.contains("ACK 05"), "{e}"),
+            _ => panic!("a refusal must not be retried or passed to the UART"),
+        }
+    }
+
+    #[test]
+    fn nothing_written_and_nothing_acked_are_told_apart() {
+        // No writer at all: the frame never goes out, and is withdrawn.
+        let m = Motors::default();
+        assert!(matches!(
+            send(true, &m),
+            Err(Fail::Silent("could not send"))
+        ));
+        assert_eq!(m.take_rc_pending(), None, "a late write must not happen");
+        // Written, but the FC stays silent through every attempt.
+        let m = Arc::new(Motors::default());
+        writer(&m, None);
+        assert!(matches!(
+            send(true, &m),
+            Err(Fail::Silent("no ACK from the FC"))
+        ));
+    }
+
+    #[test]
+    fn an_ack_for_another_sequence_is_not_taken() {
+        let m = Arc::new(Motors::default());
+        // An old ACK waits in the mailbox under a sequence the writer will not use.
+        let stale = ack(7, 0x00);
+        m.deliver_duml_ack(&duml::parse(&stale).unwrap().0);
+        writer(&m, Some(0x01));
+        assert!(matches!(send(true, &m), Err(Fail::Refused(_))));
+    }
+}

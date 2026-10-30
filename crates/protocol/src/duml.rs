@@ -510,6 +510,100 @@ mod tests {
         assert_eq!(d.buffered(), 0);
     }
 
+    /// Junk, a stray SOF whose header CRC holds (claiming 20 bytes), a frame
+    /// with a broken CRC-16, then three good frames, the last with a payload.
+    fn messy_stream() -> (Vec<u8>, usize) {
+        let mut stray = vec![SOF, 20, 0x04, 0];
+        stray[3] = crc8(&stray[0..3]);
+        stray.resize(20, 0xAA);
+        let mut broken = F1.to_vec();
+        broken[11] ^= 1;
+        let h = Header {
+            sender: 0x03,
+            receiver: 0x02,
+            seq: 9,
+            cmd_type: 0x80,
+            cmd_set: 0x03,
+            cmd_id: 0x2a,
+        };
+        let with_payload = build(&h, &[0x00, SOF, 0x0d]).unwrap();
+        let stream = [
+            &[0x13, 0x37, SOF][..],
+            &stray,
+            &broken,
+            &F2,
+            &F3,
+            &with_payload,
+        ]
+        .concat();
+        (stream, 3)
+    }
+
+    fn good_frames(d: &mut Decoder) -> usize {
+        let mut good = 0;
+        d.drain(|f| good += usize::from(f.crc_ok));
+        good
+    }
+
+    #[test]
+    fn decoder_finds_every_frame_fed_a_byte_at_a_time_or_cut_anywhere() {
+        let (stream, want) = messy_stream();
+        let mut d = Decoder::new();
+        let mut good = 0;
+        for b in &stream {
+            d.push(std::slice::from_ref(b));
+            good += good_frames(&mut d);
+        }
+        assert_eq!((good, d.buffered()), (want, 0), "byte at a time");
+        for cut in 0..=stream.len() {
+            let mut d = Decoder::new();
+            d.push(&stream[..cut]);
+            let mut good = good_frames(&mut d);
+            d.push(&stream[cut..]);
+            good += good_frames(&mut d);
+            assert_eq!((good, d.buffered()), (want, 0), "cut at {cut}");
+        }
+    }
+
+    #[test]
+    fn every_truncation_asks_for_more() {
+        for n in 0..F2.len() {
+            assert_eq!(
+                parse(&F2[..n]).map(|_| ()),
+                Err(ParseError::NeedMore),
+                "{n}"
+            );
+        }
+        // A length field below the fixed overhead is not a frame.
+        let mut short = vec![SOF, (OVERHEAD - 1) as u8, 0x04, 0];
+        short[3] = crc8(&short[0..3]);
+        assert_eq!(parse(&short).map(|_| ()), Err(ParseError::Invalid));
+    }
+
+    #[test]
+    fn the_largest_frame_builds_and_parses() {
+        let h = Header {
+            sender: 0x02,
+            receiver: 0x03,
+            seq: 0xFFFF,
+            cmd_type: 0x40,
+            cmd_set: 0x03,
+            cmd_id: 0x2a,
+        };
+        let payload = vec![SOF; MAX_LEN - OVERHEAD];
+        let frame = build(&h, &payload).unwrap();
+        assert_eq!(frame.len(), MAX_LEN);
+        let (f, n) = parse(&frame).unwrap();
+        assert_eq!(
+            (n, f.crc_ok, f.seq, f.payload.len()),
+            (MAX_LEN, true, 0xFFFF, payload.len())
+        );
+        assert_eq!(
+            build(&h, &[0; MAX_LEN - OVERHEAD + 1]),
+            Err(BuildError::PayloadTooLong)
+        );
+    }
+
     #[test]
     fn build_round_trips_captured_frame() {
         let h = Header {

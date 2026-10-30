@@ -363,6 +363,136 @@ mod tests {
     }
 
     #[test]
+    fn limits_hold_at_their_exact_boundaries() {
+        let l = Limits::default();
+        let wait = |seconds| Command::Wait { seconds };
+        let tilt = |seconds| Command::Tilt {
+            camera: 1,
+            direction: Vertical::Up,
+            seconds,
+        };
+        assert_eq!(plan(&[wait(60.0)]).validate(&l), Ok(()));
+        assert_eq!(
+            plan(&[wait(60.01)]).validate(&l),
+            Err(Invalid::WaitTooLong {
+                seconds: 61,
+                max: 60
+            })
+        );
+        assert_eq!(plan(&[tilt(10.0)]).validate(&l), Ok(()));
+        assert!(plan(&[tilt(10.01)]).validate(&l).is_err());
+        let armed_60 = [Command::Arm, wait(30.0), wait(30.0), Command::Disarm];
+        assert_eq!(plan(&armed_60).validate(&l), Ok(()));
+        assert_eq!(plan(&vec![Command::Disarm; 32]).validate(&l), Ok(()));
+        assert_eq!(
+            plan(&vec![Command::Disarm; 33]).validate(&l),
+            Err(Invalid::TooManySteps(32))
+        );
+        let tight = Limits {
+            max_steps: 1,
+            ..Limits::default()
+        };
+        assert_eq!(plan(&[Command::Arm]).validate(&tight), Ok(()));
+        assert!(
+            plan(&[Command::Arm, Command::Disarm])
+                .validate(&tight)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn every_timed_step_refuses_zero_negative_and_non_finite_durations() {
+        let l = Limits::default();
+        for seconds in [0.0, -0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for step in [
+                Command::Wait { seconds },
+                Command::Pan {
+                    camera: 1,
+                    direction: Horizontal::Right,
+                    seconds,
+                },
+                Command::Tilt {
+                    camera: 2,
+                    direction: Vertical::Down,
+                    seconds,
+                },
+            ] {
+                assert_eq!(
+                    plan(std::slice::from_ref(&step)).validate(&l),
+                    Err(Invalid::BadWait),
+                    "{step:?}"
+                );
+            }
+        }
+        // The smallest positive duration is fine.
+        assert_eq!(
+            plan(&[Command::Wait {
+                seconds: f32::MIN_POSITIVE
+            }])
+            .validate(&l),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn only_cameras_one_and_two_exist() {
+        let l = Limits::default();
+        for camera in [0u8, 3, 255] {
+            let steps = [
+                Command::Pan {
+                    camera,
+                    direction: Horizontal::Left,
+                    seconds: 1.0,
+                },
+                Command::Tilt {
+                    camera,
+                    direction: Vertical::Up,
+                    seconds: 1.0,
+                },
+                Command::Recenter {
+                    camera: Some(camera),
+                },
+            ];
+            for step in steps {
+                assert_eq!(plan(&[step]).validate(&l), Err(Invalid::BadCamera(camera)));
+            }
+        }
+        for camera in [1, 2] {
+            assert_eq!(
+                plan(&[Command::Recenter {
+                    camera: Some(camera)
+                }])
+                .validate(&l),
+                Ok(())
+            );
+        }
+        assert_eq!(
+            plan(&[Command::Recenter { camera: None }]).validate(&l),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn plan_json_refuses_wrong_types_and_out_of_range_numbers() {
+        for bad in [
+            r#"{"steps":[{"cmd":"pan","camera":256,"direction":"left","seconds":1}]}"#,
+            r#"{"steps":[{"cmd":"pan","camera":-1,"direction":"left","seconds":1}]}"#,
+            r#"{"steps":[{"cmd":"pan","camera":1.5,"direction":"left","seconds":1}]}"#,
+            r#"{"steps":[{"cmd":"pan","camera":1,"direction":"up","seconds":1}]}"#,
+            r#"{"steps":[{"cmd":"wait","seconds":"5"}]}"#,
+            r#"{"steps":[{"cmd":"wait"}]}"#,
+            r#"{"steps":[{"cmd":"link","on":1}]}"#,
+            r#"{"steps":{"cmd":"arm"}}"#,
+        ] {
+            assert!(serde_json::from_str::<Plan>(bad).is_err(), "{bad}");
+        }
+        // A number too large for f32 becomes infinity, which validation refuses.
+        let p: Plan =
+            serde_json::from_str(r#"{"steps":[{"cmd":"wait","seconds":1e300}]}"#).unwrap();
+        assert_eq!(p.validate(&Limits::default()), Err(Invalid::BadWait));
+    }
+
+    #[test]
     fn json_shape_round_trips() {
         let p = plan(&[
             Command::Arm,

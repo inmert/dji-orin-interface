@@ -426,6 +426,41 @@ mod tests {
     }
 
     #[test]
+    fn reads_numbers_units_and_decimals() {
+        let one = |text: &str| parse(text).map(|p| p.steps);
+        assert_eq!(one("wait twenty seconds"), Ok(vec![wait(20.0)]));
+        assert!(one("wait zero seconds").is_err());
+        assert_eq!(one("wait 2 minutes"), Ok(vec![wait(120.0)]));
+        assert_eq!(one("wait 90s"), Ok(vec![wait(90.0)]));
+        assert_eq!(one("wait 1m"), Ok(vec![wait(60.0)]));
+        assert_eq!(one("sleep 3"), Ok(vec![wait(3.0)]));
+        assert_eq!(one("pause for 0.5 sec"), Ok(vec![wait(0.5)]));
+        // A full stop inside a number does not end the clause; one after it does.
+        assert_eq!(one("wait 2.5 s. disarm"), Ok(vec![wait(2.5), Disarm]));
+        assert!(one("wait twentyone seconds").is_err());
+        assert!(one("wait inf seconds").is_err());
+        assert!(one("wait nan").is_err());
+    }
+
+    #[test]
+    fn whatever_it_parses_from_the_documented_forms_is_within_the_limits() {
+        let limits = crate::Limits::default();
+        for text in [
+            "arm for 5 seconds then disarm",
+            "arm, wait 3 seconds, disarm",
+            "pan left 2 seconds",
+            "look up 3 seconds on camera 2",
+            "recenter camera 2",
+            "link cameras and then unlink",
+            "spin up for half minute",
+        ] {
+            let plan = parse(text).unwrap();
+            assert_eq!(plan.validate(&limits), Ok(()), "{text:?}");
+            assert!(!plan.ends_armed(), "{text:?}");
+        }
+    }
+
+    #[test]
     fn rejects_what_it_does_not_understand() {
         assert_eq!(parse("   "), Err(ParseError::Empty));
         assert_eq!(

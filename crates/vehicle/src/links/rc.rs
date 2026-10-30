@@ -302,3 +302,139 @@ pub fn write(ep2: OwnedFd, vehicle: &Vehicle) {
         sleep(period);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+    use std::os::unix::net::UnixStream;
+    use std::sync::{Arc, Mutex};
+
+    use dji_protocol::duml::{Device, Header};
+
+    use super::*;
+
+    /// One DUML frame as the RC passes it to the app: a type-0x49 outer frame.
+    fn outer(duml: &[u8]) -> Vec<u8> {
+        let len = u16::try_from(duml.len()).unwrap().to_le_bytes();
+        [&[0x55, 0xcc, 0x49, 0x57, len[0], len[1], 0, 0][..], duml].concat()
+    }
+
+    /// Every frame the RC received: command set, id and payload.
+    type Seen = Arc<Mutex<Vec<(u8, u8, Vec<u8>)>>>;
+
+    /// The real reader and writer on socket pairs standing in for ep1 and
+    /// ep2, and an RC + FC behind them that records every frame the writer
+    /// sends (set, id, payload) and ACKs each motor frame with `code`, one
+    /// byte at a time so the reader has to reassemble it.
+    fn link(code: u8) -> (Arc<Vehicle>, Seen) {
+        let v = Vehicle::new();
+        let (ep1, mut rc_out) = UnixStream::pair().unwrap();
+        let (ep2, mut rc_in) = UnixStream::pair().unwrap();
+        {
+            let v = Arc::clone(&v);
+            std::thread::spawn(move || read(OwnedFd::from(ep1), &v, None, |_, _| {}));
+        }
+        {
+            let v = Arc::clone(&v);
+            std::thread::spawn(move || write(OwnedFd::from(ep2), &v));
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        {
+            let seen = Arc::clone(&seen);
+            std::thread::spawn(move || {
+                let mut d = duml::Decoder::new();
+                let mut buf = [0u8; 4096];
+                while let Ok(n @ 1..) = rc_in.read(&mut buf) {
+                    d.push(&buf[..n]);
+                    let mut acks = Vec::new();
+                    d.drain(|f| {
+                        assert!(f.crc_ok, "the writer sent a corrupt frame");
+                        seen.lock()
+                            .unwrap()
+                            .push((f.cmd_set, f.cmd_id, f.payload.to_vec()));
+                        if (f.cmd_set, f.cmd_id) == (flyc::CMD_SET, flyc::CMD_ID_FUNCTION_CONTROL) {
+                            let h = Header {
+                                sender: duml::addr(Device::FlightCtrl, 0),
+                                receiver: f.sender,
+                                seq: f.seq,
+                                cmd_type: 0x80,
+                                cmd_set: f.cmd_set,
+                                cmd_id: f.cmd_id,
+                            };
+                            acks.push(outer(&duml::build(&h, &[code]).unwrap()));
+                        }
+                    });
+                    for b in acks.concat() {
+                        rc_out.write_all(&[b]).unwrap();
+                    }
+                }
+            });
+        }
+        v.telemetry.lock().unwrap().link_up = true;
+        (v, seen)
+    }
+
+    #[test]
+    fn a_motor_start_goes_out_on_ep2_and_its_ack_comes_back_on_ep1() {
+        let (v, seen) = link(0x00);
+        match crate::motors::rc::send(true, &v.motors) {
+            Ok(m) => assert_eq!(m, "motors started over the RC link"),
+            Err(_) => panic!("the ACK did not reach the request"),
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [(
+                flyc::CMD_SET,
+                flyc::CMD_ID_FUNCTION_CONTROL,
+                vec![flyc::FUNCTION_START_MOTOR]
+            )]
+        );
+        // The reader folded the ACK into the snapshot as well.
+        let t = v.snapshot();
+        assert_eq!((t.link_up, t.frames), (true, 1));
+    }
+
+    #[test]
+    fn a_refusal_over_the_wire_is_reported() {
+        let (v, _) = link(0x03);
+        assert!(matches!(
+            crate::motors::rc::send(false, &v.motors),
+            Err(crate::motors::rc::Fail::Refused(_))
+        ));
+    }
+
+    #[test]
+    fn a_move_streams_until_released_and_a_recenter_follows_the_release() {
+        let (v, seen) = link(0x00);
+        let mv = GimbalMove {
+            pitch: 0,
+            yaw: 200,
+            active: true,
+        };
+        v.gimbal.apply_move(Camera::Two, mv);
+        sleep(Duration::from_millis(350));
+        v.gimbal.request_reset(Some(Camera::Two));
+        sleep(Duration::from_millis(350));
+        let frames = seen.lock().unwrap().clone();
+        let moves: Vec<&Vec<u8>> = frames
+            .iter()
+            .filter(|(s, i, _)| (*s, *i) == (gimbal::CMD_SET, gimbal::CMD_ID_MOVE))
+            .map(|(_, _, p)| p)
+            .collect();
+        assert!(
+            moves.len() >= 2,
+            "a held move repeats every tick: {moves:?}"
+        );
+        assert!(moves[..moves.len() - 1].iter().all(|p| **p == mv.payload()));
+        assert_eq!(*moves[moves.len() - 1], [0; 7], "then exactly one release");
+        let last = frames.last().unwrap();
+        assert_eq!(
+            (last.0, last.1, last.2.as_slice()),
+            (gimbal::CMD_SET, 0x4c, &[0xfe, 0x01][..])
+        );
+        assert!(
+            v.gimbal.lock().reset_pending.is_empty(),
+            "sent once, not repeated"
+        );
+    }
+}

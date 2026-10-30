@@ -431,6 +431,40 @@ mod tests {
         assert_eq!(r.isotherm_middle, 177); // the rest of the report survives
     }
 
+    #[test]
+    fn truncated_reports_decode_only_what_they_hold() {
+        // The captured spot-mode report, cut at every length.
+        let payload = hex(concat!(
+            "01 00 02 01 64 00 18 03 14 00 03 00 0f 00 0f 00 10 00 00 00 ",
+            "3f 00 00 00 3f cd cc a8 41 00 00 01 01 ff ff 20 00 26 00 01 ",
+            "00 02 00 04 01 00 02 01 81 00 10 27 10 27 98 08 98 08 10 27 ",
+            "98 08 00 00 98 08 88 13 88 13 88 13 88 13 cd cc a8 41 00 00 ",
+            "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 0f 00 00 00 ",
+        ));
+        for n in 0..=payload.len() {
+            let frame = duml::build(
+                &Header {
+                    sender: duml::addr(Device::Camera, CAMERA_INDEX),
+                    receiver: duml::addr(Device::App, 0),
+                    seq: 1,
+                    cmd_type: 0,
+                    cmd_set: CMD_SET,
+                    cmd_id: CMD_ID_REPORT,
+                },
+                &payload[..n],
+            )
+            .unwrap();
+            let r = Report::decode(&duml::parse(&frame).unwrap().0);
+            // The spot flags at byte 48 are the last field every report needs;
+            // the display mode (byte 94) is optional.
+            assert_eq!(r.is_some(), n > 48, "{n} bytes");
+            if let Some(r) = r {
+                assert_eq!(r.display_mode.is_some(), n > 94, "{n} bytes");
+                assert_eq!((r.spot_x, r.spot_y), (0.5, 0.5));
+            }
+        }
+    }
+
     fn hex(s: &str) -> Vec<u8> {
         let s: String = s.split_whitespace().collect();
         (0..s.len())

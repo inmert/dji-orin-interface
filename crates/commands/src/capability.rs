@@ -467,6 +467,94 @@ mod tests {
     }
 
     #[test]
+    fn the_registry_has_unique_names_and_one_kind_per_parameter() {
+        for (i, a) in CAPABILITIES.iter().enumerate() {
+            assert!(
+                CAPABILITIES[i + 1..].iter().all(|b| b.name != a.name),
+                "duplicate capability {}",
+                a.name
+            );
+            for (j, p) in a.params.iter().enumerate() {
+                assert!(
+                    a.params[j + 1..].iter().all(|q| q.name != p.name),
+                    "{} lists {} twice",
+                    a.name,
+                    p.name
+                );
+            }
+        }
+        // The flat step shape has one schema per parameter name, so a name
+        // must mean the same kind everywhere (word sets may differ: they are
+        // merged).
+        let same_kind =
+            |a: Kind, b: Kind| matches!((a, b), (Kind::Word(_), Kind::Word(_))) || a == b;
+        for a in CAPABILITIES.iter().flat_map(|c| c.params) {
+            for b in CAPABILITIES.iter().flat_map(|c| c.params) {
+                assert!(
+                    a.name != b.name || same_kind(a.kind, b.kind),
+                    "{} has two kinds",
+                    a.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_capability_decodes_its_minimal_step() {
+        // The required parameters, each with a value of its kind: every
+        // registered name must build a command, and that command must name
+        // its own capability back.
+        for c in CAPABILITIES {
+            let mut params = BTreeMap::new();
+            for p in c.params.iter().filter(|p| !p.optional) {
+                let value = match p.kind {
+                    Kind::Seconds => json!(2.5),
+                    Kind::Camera => json!(2),
+                    Kind::Word(words) => json!(words[0]),
+                    Kind::Bool => json!(true),
+                };
+                params.insert(p.name.to_string(), value);
+            }
+            let step = Step {
+                cmd: c.name.into(),
+                params: Params(params),
+            };
+            let cmd = Command::from_step(&step).unwrap_or_else(|e| panic!("{}: {e}", c.name));
+            assert_eq!(cmd.capability().name, c.name);
+        }
+    }
+
+    #[test]
+    fn parameters_of_the_wrong_type_are_refused() {
+        for bad in [
+            r#"{"cmd":"wait","seconds":"3"}"#,
+            r#"{"cmd":"wait","seconds":true}"#,
+            r#"{"cmd":"pan","direction":"left","camera":"2"}"#,
+            r#"{"cmd":"pan","direction":7}"#,
+            r#"{"cmd":"link","on":"true"}"#,
+            r#"{"cmd":"link","on":1}"#,
+            r#"{"cmd":"ARM"}"#,
+            r#"{"cmd":""}"#,
+        ] {
+            assert!(step(bad).is_err(), "{bad}");
+        }
+        // Values of the right type out of range decode, and the limits refuse
+        // them (see `Plan::validate`).
+        assert_eq!(
+            step(r#"{"cmd":"wait","seconds":-2}"#),
+            Ok(Command::Wait { seconds: -2.0 })
+        );
+        assert_eq!(
+            step(r#"{"cmd":"recenter","camera":0}"#),
+            Ok(Command::Recenter { camera: Some(0) })
+        );
+        assert_eq!(
+            step(r#"{"cmd":"recenter","camera":255}"#),
+            Ok(Command::Recenter { camera: Some(255) })
+        );
+    }
+
+    #[test]
     fn every_command_knows_its_capability() {
         let cmds = [
             Command::Arm,

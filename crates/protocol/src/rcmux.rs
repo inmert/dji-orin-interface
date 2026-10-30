@@ -231,6 +231,43 @@ mod tests {
     }
 
     #[test]
+    fn a_byte_at_a_time_gives_the_same_packets() {
+        let video: Vec<u8> = (0..40).collect();
+        let duml = [0x55, 0x0d, 0x04, 0x33];
+        let mux = [packet(VIDEO_A, &video), packet(DUML, &duml)].concat();
+        let stream = [
+            &[0x55, 0xcc][..], // the start of a header, then garbage
+            &[0x00; 9],
+            &sliced(&mux, 13),
+            &outer(DUML_DIRECT, &duml),
+        ]
+        .concat();
+        let mut d = Demux::new();
+        let mut out = Vec::new();
+        for b in &stream {
+            d.push(std::slice::from_ref(b), |c, p| out.push((c, p.to_vec())));
+        }
+        assert_eq!(
+            out,
+            vec![
+                (VIDEO_A, video),
+                (DUML, duml.to_vec()),
+                (DUML_DIRECT, duml.to_vec())
+            ]
+        );
+    }
+
+    #[test]
+    fn an_outer_frame_over_the_size_limit_is_skipped() {
+        let mut huge = outer(DUML_DIRECT, &[1]);
+        huge[4..6].copy_from_slice(&u16::try_from(OUTER_MAX + 1).unwrap().to_le_bytes());
+        let stream = [huge, outer(DUML_DIRECT, &[2])].concat();
+        assert_eq!(collect(&stream, 0), vec![(DUML_DIRECT, vec![2])]);
+        let at_limit = outer(DUML_DIRECT, &vec![3; OUTER_MAX]);
+        assert_eq!(collect(&at_limit, 5).len(), 1);
+    }
+
+    #[test]
     fn reassembles_packets_that_span_outer_frames() {
         let video: Vec<u8> = (0..100).collect();
         let mux = [packet(VIDEO_A, &video), packet(VIDEO_B, &[7; 9])].concat();

@@ -418,6 +418,101 @@ mod tests {
     }
 
     #[test]
+    fn missing_keys_take_the_defaults_and_unknown_keys_are_errors() {
+        for text in [
+            "",
+            "[web]",
+            "[web]\n[limits]\n[understanding.local]",
+            "[video]\nrc = {}",
+        ] {
+            let cfg: Config = toml::from_str(text).unwrap();
+            assert_eq!(cfg.web, Web::default(), "{text:?}");
+            assert_eq!(cfg.limits.limits(), Limits::default(), "{text:?}");
+        }
+        assert!(
+            toml::from_str::<Config>("[video]\nrc = {}")
+                .unwrap()
+                .video
+                .rc
+                .is_empty()
+        );
+        for bad in [
+            "colour = 1",
+            "[webb]",
+            "[web]\nport = 80",
+            "[ports]\nbaud = 9600",
+            "[motors]\napp_id = 1",
+            "[limits]\nmax_wait = 5",
+            "[understanding.local]\nkey = \"x\"",
+            "[understanding.remote]",
+            "[video]\nrc = { cam3 = 1 }\nrc_dumps = \"x\"",
+        ] {
+            assert!(toml::from_str::<Config>(bad).is_err(), "{bad:?}");
+        }
+        // Wrong types and out-of-range values are errors too, not defaults.
+        for bad in [
+            "[ports]\nosdk_baud = \"fast\"",
+            "[gimbal]\ncmd_type = 256",
+            "[gimbal]\nplan_speed = 40000",
+            "[limits]\nmax_steps = -1",
+            "[motors]\nosdk_app_id = 4294967296",
+        ] {
+            assert!(toml::from_str::<Config>(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn unparseable_overrides_are_errors_and_blank_ones_are_unset() {
+        let fails = |name: &'static str, value: &'static str| {
+            let mut cfg = Config::default();
+            cfg.apply_env(|n| (n == name).then(|| value.to_string()))
+                .is_err()
+        };
+        for (name, value) in [
+            ("OSDK_APP_ID", "abc"),
+            ("OSDK_APP_ID", "-1"),
+            ("OSDK_APP_ID", "4294967296"),
+            ("OSDK_BAUD", "230400.0"),
+            ("GIMBAL_CMD_TYPE", "0x100"),
+            ("GIMBAL_CMD_TYPE", "zz"),
+            ("RC_VIDEO", "cam1"),
+            ("RC_VIDEO", "cam1=0xZZ"),
+            ("RC_VIDEO", "cam1=0x11,,cam2=0x15"),
+            ("RC_VIDEO", "cam1=0x111"),
+        ] {
+            assert!(fails(name, value), "{name}={value}");
+        }
+        let mut cfg = Config::default();
+        cfg.apply_env(|n| match n {
+            "OSDK_APP_ID" | "LLM_PROVIDER" => Some("   ".into()),
+            "TLS" => Some("on".into()),
+            "GIMBAL_CMD_TYPE" => Some("40".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(cfg.motors.osdk_app_id, None, "blank is unset");
+        assert_eq!(cfg.understanding.provider(), None);
+        assert!(cfg.https().is_some(), "only TLS=off turns it off");
+        assert_eq!(cfg.gimbal.cmd_type, 0x40, "hex with or without 0x");
+        assert!(
+            Video {
+                fpv_udt: "orin:1".into(),
+                ..Video::default()
+            }
+            .fpv()
+            .is_err()
+        );
+        assert_eq!(
+            Video {
+                fpv_udt: "off".into(),
+                ..Video::default()
+            }
+            .fpv(),
+            Ok(None)
+        );
+    }
+
+    #[test]
     fn relative_paths_follow_the_file() {
         let mut cfg = Config::default();
         cfg.anchor(Path::new("/opt/dji"));

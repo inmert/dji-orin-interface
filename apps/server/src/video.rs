@@ -686,6 +686,37 @@ mod tests {
     }
 
     #[test]
+    fn byte_at_a_time_input_gives_the_same_units_and_images() {
+        let stream = [
+            &[0, 0, 0, 1, 0x67, 0x42, 0, 0, 1][..], // 4-byte code; the next code split across lines
+            &[0x68, 0xce, 0, 0, 3, 1],              // emulation prevention: not a start code
+            &[0, 0, 1, 0xe5, 0x00],                 // forbidden bit: dropped
+            &[0, 0, 0, 1, 0x65, 0x88, 0x84],
+            &[0, 0, 1, 0x09, 0x10], // releases the unit before it
+        ]
+        .concat();
+        let mut whole = NalFilter::default();
+        let want = whole.push(&stream);
+        assert_eq!(
+            want,
+            [
+                &[0, 0, 1, 0x67, 0x42][..],
+                &[0, 0, 1, 0x68, 0xce, 0, 0, 3, 1],
+                &[0, 0, 1, 0x65, 0x88, 0x84]
+            ]
+            .concat()
+        );
+        let mut f = NalFilter::default();
+        let got: Vec<u8> = stream.iter().flat_map(|b| f.push(&[*b])).collect();
+        assert_eq!(got, want);
+
+        let images = [A, B].concat();
+        let mut s = JpegSplitter::default();
+        let got: Vec<Vec<u8>> = images.iter().flat_map(|b| s.push(&[*b])).collect();
+        assert_eq!(got, vec![A.to_vec(), B.to_vec()]);
+    }
+
+    #[test]
     fn pipeline_scales_only_when_asked_and_writes_video_to_fd_3() {
         let scaled = gst_pipeline(Some((640, 360)));
         assert!(scaled.contains("width=640,height=360,format=I420"));

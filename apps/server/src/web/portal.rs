@@ -277,6 +277,129 @@ mod tests {
         assert_eq!(v.motors.take_rc_pending(), None);
     }
 
+    #[test]
+    fn garbage_changes_nothing() {
+        let v = Vehicle::new();
+        for garbage in [
+            "",
+            "null",
+            "[]",
+            "{\"cmd\":null}",
+            r#"{"cmd":"gimbal"}"#,
+            r#"{"cmd":"gimbal","camera":1,"pitch":40000,"active":true}"#,
+            r#"{"cmd":"gimbal","camera":-1,"active":true}"#,
+            r#"{"cmd":"Motors","on":true}"#,
+            r#"{"cmd":"motors"}"#,
+            r#"{"cmd":"motors","on":1}"#,
+            r#"{"cmd":"spot","x":1e999,"y":0}"#,
+            r#"{"cmd":"isotherm","lower":20,"middle":30}"#,
+            r#"{"cmd":"thermal_mode","mode":300}"#,
+            r#"{"cmd":"plan"}"#,
+            r#"{"cmd":"plan","text":"   ","run":true}"#,
+            r#"{"cmd":"plan","text":"x","run":true,"plan":{"steps":[{"cmd":"fly"}]}}"#,
+            r#"{"cmd":"plan","text":"x","run":true,"plan":{"steps":[]}}"#,
+            "{\"cmd\":\"stop\"",
+        ] {
+            handle(garbage, &v, None);
+        }
+        let g = v.gimbal.lock();
+        assert!(!g.cam1.active && !g.cam2.active && !g.linked && g.reset_pending.is_empty());
+        drop(g);
+        assert_eq!(v.motors.lock().pending, None);
+        assert!(v.thermal.lock().pending.is_empty());
+        let s = v.executor.status();
+        assert!(!s.running && !s.parsing && s.plan.is_none(), "{s:?}");
+    }
+
+    /// The RC link's reader and writer on socket pairs, the motor worker,
+    /// and an RC + FC behind them that ACKs every motor frame; returns the
+    /// function codes the FC received.
+    fn aircraft(v: &Arc<Vehicle>) -> Arc<std::sync::Mutex<Vec<u8>>> {
+        use std::io::{Read, Write};
+        use std::os::fd::OwnedFd;
+        use std::os::unix::net::UnixStream;
+
+        use dji_protocol::duml::{self, Device, Header};
+        use dji_protocol::flyc;
+        use dji_vehicle::links::rc;
+
+        let (ep1, mut rc_out) = UnixStream::pair().unwrap();
+        let (ep2, mut rc_in) = UnixStream::pair().unwrap();
+        let spawn = |f: Box<dyn FnOnce(&Vehicle) + Send>| {
+            let v = Arc::clone(v);
+            std::thread::spawn(move || f(&v));
+        };
+        spawn(Box::new(|v| {
+            rc::read(OwnedFd::from(ep1), v, None, |_, _| {})
+        }));
+        spawn(Box::new(|v| rc::write(OwnedFd::from(ep2), v)));
+        {
+            let v = Arc::clone(v);
+            std::thread::spawn(move || dji_vehicle::motors::run(&v, None));
+        }
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let fc = Arc::clone(&seen);
+        std::thread::spawn(move || {
+            let mut d = duml::Decoder::new();
+            let mut buf = [0u8; 4096];
+            while let Ok(n @ 1..) = rc_in.read(&mut buf) {
+                d.push(&buf[..n]);
+                let mut acks = Vec::new();
+                d.drain(|f| {
+                    if (f.cmd_set, f.cmd_id) != (flyc::CMD_SET, flyc::CMD_ID_FUNCTION_CONTROL) {
+                        return;
+                    }
+                    fc.lock().unwrap().push(f.payload[0]);
+                    let h = Header {
+                        sender: duml::addr(Device::FlightCtrl, 0),
+                        receiver: f.sender,
+                        seq: f.seq,
+                        cmd_type: 0x80,
+                        cmd_set: f.cmd_set,
+                        cmd_id: f.cmd_id,
+                    };
+                    let ack = duml::build(&h, &[0x00]).unwrap();
+                    let len = u16::try_from(ack.len()).unwrap().to_le_bytes();
+                    acks.extend_from_slice(&[0x55, 0xcc, 0x49, 0x57, len[0], len[1], 0, 0]);
+                    acks.extend_from_slice(&ack);
+                });
+                rc_out.write_all(&acks).unwrap();
+            }
+        });
+        v.telemetry.lock().unwrap().link_up = true;
+        seen
+    }
+
+    #[test]
+    fn a_checked_sentence_runs_on_the_aircraft_as_the_ui_confirms_it() {
+        use dji_protocol::flyc::{FUNCTION_START_MOTOR, FUNCTION_STOP_MOTOR};
+        let v = Vehicle::new();
+        let fc = aircraft(&v);
+        // Check, as the portal's Check button sends it…
+        let text = "arm for 0.3 seconds then disarm";
+        handle(&format!(r#"{{"cmd":"plan","text":"{text}"}}"#), &v, None);
+        let preview = settled(&v).preview.expect("a plan to confirm");
+        assert!(fc.lock().unwrap().is_empty(), "checking sends nothing");
+        // …then Run with the previewed steps, as the portal does after its
+        // confirmation dialog.
+        let run = serde_json::json!({"cmd": "plan", "text": text, "run": true, "plan": preview});
+        handle(&run.to_string(), &v, None);
+        let mut s = v.executor.status();
+        for _ in 0..200 {
+            if !s.running {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            s = v.executor.status();
+        }
+        assert_eq!((s.ok, s.message.as_str()), (Some(true), "done"), "{s:?}");
+        assert_eq!(
+            *fc.lock().unwrap(),
+            [FUNCTION_START_MOTOR, FUNCTION_STOP_MOTOR]
+        );
+        assert_eq!(v.snapshot().frames, 2, "both ACKs came back over ep1");
+    }
+
     /// Wait for the interpretation thread to finish.
     fn settled(v: &Vehicle) -> dji_vehicle::executor::Status {
         for _ in 0..100 {

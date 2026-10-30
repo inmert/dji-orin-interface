@@ -229,6 +229,75 @@ mod tests {
         assert_eq!(parse(&bytes), Err(ParseError::BadHeaderCrc));
     }
 
+    /// An ACK of `data` with session 2 and sequence `seq`.
+    fn ack(seq: u16, data: &[u8]) -> Vec<u8> {
+        let len = HEADER_LEN + data.len() + 4;
+        let [s0, s1] = seq.to_le_bytes();
+        let mut f = vec![SOF, len as u8, 0, 0x22, 0, 0, 0, 0, s0, s1];
+        f.extend_from_slice(&crc16(&f).to_le_bytes());
+        f.extend_from_slice(data);
+        f.extend_from_slice(&crc32(&f).to_le_bytes());
+        f
+    }
+
+    /// Line noise, a frame with a broken CRC-32, then a broadcast, an ACK and
+    /// a second broadcast: the three good frames, as (ack, seq).
+    fn noisy_stream() -> (Vec<u8>, Vec<(bool, u16)>) {
+        let mut broken = frame(0x02, 0x00, &[1, 0, 1, 2]);
+        let last = broken.len() - 1;
+        broken[last] ^= 0x80;
+        let stream = [
+            &[0x00, SOF, 0x13, SOF][..],
+            &broken,
+            &frame(0x02, 0x00, &[1, 0, 9]),
+            &ack(0x1234, &[2, 0]),
+            &frame(0x02, 0x00, &[1, 0, SOF, SOF]),
+        ]
+        .concat();
+        (stream, vec![(false, 7), (true, 0x1234), (false, 7)])
+    }
+
+    #[test]
+    fn decoder_finds_every_frame_fed_a_byte_at_a_time_or_cut_anywhere() {
+        let (stream, want) = noisy_stream();
+        let mut d = Decoder::new();
+        let mut got = Vec::new();
+        for b in &stream {
+            d.push(std::slice::from_ref(b));
+            d.drain(|f| got.push((f.ack, f.seq)));
+        }
+        assert_eq!(got, want, "byte at a time");
+        for cut in 0..=stream.len() {
+            let mut d = Decoder::new();
+            let mut got = Vec::new();
+            d.push(&stream[..cut]);
+            d.drain(|f| got.push((f.ack, f.seq)));
+            d.push(&stream[cut..]);
+            d.drain(|f| got.push((f.ack, f.seq)));
+            assert_eq!(got, want, "cut at {cut}");
+        }
+    }
+
+    #[test]
+    fn truncated_and_undersized_frames() {
+        let f = frame(0x02, 0x00, &[1, 0]);
+        for n in 0..f.len() {
+            assert!(
+                matches!(parse(&f[..n]), Err(ParseError::Incomplete)),
+                "{n} bytes"
+            );
+        }
+        // A request whose length leaves no room for set/id and CRC.
+        let mut short = vec![SOF, (OVERHEAD - 1) as u8, 0, 0, 0, 0, 0, 0, 0, 0];
+        short.extend_from_slice(&crc16(&short).to_le_bytes());
+        short.resize(OVERHEAD, 0);
+        assert_eq!(parse(&short), Err(ParseError::BadLength));
+        // An empty ACK is still an ACK (no code).
+        let empty = ack(1, &[]);
+        let (a, _) = parse(&empty).unwrap();
+        assert!(a.ack && a.payload.is_empty());
+    }
+
     #[test]
     fn decoder_resyncs_and_keeps_partial_tail() {
         let a = frame(0x02, 0x00, &[1, 0]);

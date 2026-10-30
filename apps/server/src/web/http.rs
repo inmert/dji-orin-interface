@@ -415,6 +415,137 @@ mod tests {
         assert_eq!(resolve("/a\\..\\b"), None);
     }
 
+    /// A reader that hands out one byte per read.
+    struct Trickle<'a>(&'a [u8]);
+
+    impl Read for Trickle<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let Some((&b, rest)) = self.0.split_first() else {
+                return Ok(0);
+            };
+            buf[0] = b;
+            self.0 = rest;
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn reads_the_head_a_byte_at_a_time_and_keeps_what_follows() {
+        let request = b"POST /voice HTTP/1.1\r\nContent-Length: 3\r\n\r\nabc";
+        let (head, rest) = read_head(&mut Trickle(request)).unwrap();
+        assert!(head.ends_with(b"\r\n\r\n"));
+        assert_eq!(rest, b"");
+        let (head, rest) = read_head(&mut &request[..]).unwrap();
+        assert_eq!(
+            (head.len(), rest.as_slice()),
+            (request.len() - 3, &b"abc"[..])
+        );
+        // No blank line before the connection ends, or a head over the limit.
+        assert!(read_head(&mut &b"GET / HTTP/1.1\r\n"[..]).is_err());
+        assert!(read_head(&mut &b"GET / HTTP/1.1\n\n"[..]).is_err());
+        let huge = [&b"GET / HTTP/1.1\r\nX: "[..], &vec![b'a'; MAX_HEAD + 10]].concat();
+        assert!(read_head(&mut &huge[..]).is_err());
+    }
+
+    #[test]
+    fn hostile_heads_parse_to_nothing_or_harmlessly() {
+        for bad in [
+            &b""[..],
+            b"GET",
+            b"GET /",
+            b"GET / HTTP/2.0",
+            b"\xff\xfe / HTTP/1.1",
+        ] {
+            assert!(parse_head(bad).is_none(), "{bad:?}");
+        }
+        // A header line without a colon is skipped, not an error.
+        let h = parse_head(b"GET / HTTP/1.1\r\nnonsense\r\nContent-Length:  7 ").unwrap();
+        assert_eq!(h.headers, [("content-length".to_string(), "7".to_string())]);
+        // Absolute paths and repeated slashes stay under the root.
+        assert_eq!(resolve("//etc/passwd"), Some("etc/passwd"));
+        assert_eq!(resolve("/a/../../b"), None);
+        assert_eq!(resolve("/.."), None);
+        assert_eq!(resolve("/a/b/."), None);
+    }
+
+    /// Serve `request` with [`handle`] against a web root holding
+    /// `index.html`, next to a `secret.txt` outside it; the raw response
+    /// (empty if the server answered nothing).
+    fn exchange(request: &[u8]) -> String {
+        let dir = std::env::temp_dir().join(format!(
+            "dji-http-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(dir.join("root")).unwrap();
+        std::fs::write(dir.join("root/index.html"), "hello").unwrap();
+        std::fs::write(dir.join("secret.txt"), "SECRET").unwrap();
+        let cx = Context {
+            web_root: dir.join("root"),
+            feeds: Arc::new(crate::video::Feeds::new()),
+            vehicle: dji_vehicle::Vehicle::new(),
+        };
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(l.local_addr().unwrap()).unwrap();
+        let (server, _) = l.accept().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let t = std::thread::spawn(move || {
+            let _ = handle(server, "test".into(), &cx);
+        });
+        client.write_all(request).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut out = Vec::new();
+        let _ = client.read_to_end(&mut out);
+        t.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    #[test]
+    fn serves_files_and_never_anything_outside_the_root() {
+        assert!(exchange(b"GET / HTTP/1.1\r\n\r\n").ends_with("\r\n\r\nhello"));
+        for path in [
+            "/../secret.txt",
+            "/%2e%2e/secret.txt",
+            "/..%2fsecret.txt",
+            "/root/../../secret.txt",
+            "/.%2e/secret.txt",
+        ] {
+            let r = exchange(format!("GET {path} HTTP/1.1\r\n\r\n").as_bytes());
+            assert!(r.starts_with("HTTP/1.1 404"), "{path}: {r}");
+            assert!(!r.contains("SECRET"), "{path}");
+        }
+        assert!(exchange(b"GET /video/none.mjpg HTTP/1.1\r\n\r\n").contains("no such feed"));
+        assert!(exchange(b"PUT / HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 405"));
+        assert!(exchange(b"HELLO\r\n\r\n").starts_with("HTTP/1.1 400"));
+        let upgrade = b"GET /other HTTP/1.1\r\nUpgrade: websocket\r\n\r\n";
+        assert!(exchange(upgrade).starts_with("HTTP/1.1 404"));
+    }
+
+    #[test]
+    fn voice_uploads_are_bounded_and_need_a_body() {
+        let too_big = format!(
+            "POST /voice HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            MAX_BODY + 1
+        );
+        assert!(exchange(too_big.as_bytes()).starts_with("HTTP/1.1 413"));
+        // No length: no body, refused before any service is asked.
+        let r = exchange(b"POST /voice HTTP/1.1\r\n\r\nRIFF");
+        assert!(
+            r.starts_with("HTTP/1.1 503") && r.ends_with("empty recording"),
+            "{r}"
+        );
+        // A body shorter than its length, then the client stops: no answer.
+        assert_eq!(
+            exchange(b"POST /voice HTTP/1.1\r\nContent-Length: 10\r\n\r\nabc"),
+            ""
+        );
+        // A head without its blank line: no answer either.
+        assert_eq!(exchange(b"GET / HTTP/1.1\n\n"), "");
+    }
+
     #[test]
     fn parses_a_request_head_and_replays_it() {
         let head = parse_head(b"GET /ws?x=1 HTTP/1.1\r\nHost: orin:8080\r\nUpgrade: WebSocket\r\n")

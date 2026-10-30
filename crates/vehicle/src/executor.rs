@@ -348,6 +348,120 @@ mod tests {
         assert_eq!(v.executor.status().ok, Some(true));
     }
 
+    /// A vehicle whose motor requests are carried out by the real worker
+    /// over the RC-link path, with a stand-in for the RC writer and the FC
+    /// that ACKs every frame after `delay`. Returns the starts (`true`) and
+    /// stops the FC saw.
+    fn with_fake_fc(delay: Duration) -> (Arc<Vehicle>, Arc<Mutex<Vec<bool>>>) {
+        use dji_protocol::duml::{self, Device, Header};
+        use dji_protocol::flyc;
+        let v = Vehicle::new();
+        v.telemetry.lock().unwrap().link_up = true;
+        {
+            let v = Arc::clone(&v);
+            std::thread::spawn(move || crate::motors::run(&v, None));
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        {
+            let (v, seen) = (Arc::clone(&v), Arc::clone(&seen));
+            std::thread::spawn(move || {
+                let mut seq = 0u16;
+                loop {
+                    sleep(Duration::from_millis(5));
+                    let Some(on) = v.motors.take_rc_pending() else {
+                        continue;
+                    };
+                    seq += 1;
+                    v.motors.rc_sent(seq);
+                    seen.lock().unwrap().push(on);
+                    sleep(delay);
+                    let h = Header {
+                        sender: duml::addr(Device::FlightCtrl, 0),
+                        receiver: duml::addr(Device::App, 0),
+                        seq,
+                        cmd_type: 0x80,
+                        cmd_set: flyc::CMD_SET,
+                        cmd_id: flyc::CMD_ID_FUNCTION_CONTROL,
+                    };
+                    let ack = duml::build(&h, &[0x00]).unwrap();
+                    v.motors.deliver_duml_ack(&duml::parse(&ack).unwrap().0);
+                }
+            });
+        }
+        (v, seen)
+    }
+
+    /// The executor's status once the plan has ended.
+    fn ended(v: &Vehicle) -> Status {
+        for _ in 0..200 {
+            let s = v.executor.status();
+            if !s.running {
+                return s;
+            }
+            sleep(Duration::from_millis(25));
+        }
+        panic!("the plan did not end");
+    }
+
+    #[test]
+    fn a_timed_arm_starts_then_stops_the_motors() {
+        let (v, seen) = with_fake_fc(Duration::ZERO);
+        let plan = Plan::new(vec![
+            Command::Arm,
+            Command::Wait { seconds: 0.2 },
+            Command::Disarm,
+        ]);
+        v.executor.start(&v, "arm for 0.2 s", plan, "test").unwrap();
+        let s = ended(&v);
+        assert_eq!((s.ok, s.message.as_str(), s.step), (Some(true), "done", 2));
+        assert_eq!(*seen.lock().unwrap(), [true, false]);
+        assert_eq!(v.motors.status().ok, Some(true));
+    }
+
+    #[test]
+    fn a_cancel_during_a_wait_stops_the_motors() {
+        let (v, seen) = with_fake_fc(Duration::ZERO);
+        let plan = Plan::new(vec![
+            Command::Arm,
+            Command::Wait { seconds: 10.0 },
+            Command::Disarm,
+        ]);
+        v.executor.start(&v, "", plan, "test").unwrap();
+        for _ in 0..100 {
+            if v.executor.status().step == 1 {
+                break;
+            }
+            sleep(Duration::from_millis(20));
+        }
+        v.executor.cancel();
+        let s = ended(&v);
+        assert_eq!(
+            (s.ok, s.message.as_str()),
+            (Some(false), "cancelled; motors stopped")
+        );
+        assert_eq!(*seen.lock().unwrap(), [true, false]);
+    }
+
+    #[test]
+    fn a_cancel_during_a_motor_step_lets_it_finish_then_stops() {
+        // The FC takes 300 ms to answer the start; the cancel comes first.
+        let (v, seen) = with_fake_fc(Duration::from_millis(300));
+        let plan = Plan::new(vec![
+            Command::Arm,
+            Command::Wait { seconds: 10.0 },
+            Command::Disarm,
+        ]);
+        v.executor.start(&v, "", plan, "test").unwrap();
+        sleep(Duration::from_millis(100));
+        v.executor.cancel();
+        let s = ended(&v);
+        assert_eq!(
+            (s.ok, s.message.as_str(), s.step),
+            (Some(false), "cancelled; motors stopped", 1)
+        );
+        assert_eq!(*seen.lock().unwrap(), [true, false]);
+    }
+
     #[test]
     fn a_plan_over_the_limits_never_starts() {
         let v = Vehicle::new();
