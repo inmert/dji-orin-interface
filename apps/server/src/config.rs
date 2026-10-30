@@ -39,6 +39,9 @@ pub struct Web {
     pub https: String,
     pub root: PathBuf,
     pub cert_dir: PathBuf,
+    /// Further names the portal is reached by (the Orin's own hostname and
+    /// addresses are always accepted).
+    pub hosts: Vec<String>,
 }
 
 impl Default for Web {
@@ -48,6 +51,7 @@ impl Default for Web {
             https: "0.0.0.0:8443".into(),
             root: "web/dist".into(),
             cert_dir: "certs".into(),
+            hosts: Vec::new(),
         }
     }
 }

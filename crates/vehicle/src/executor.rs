@@ -6,8 +6,9 @@
 //! motors they are stopped first. Nothing here moves the aircraft beyond
 //! what [`crate::motors`] can do today; flight steps are future variants.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -53,6 +54,9 @@ pub struct Status {
 pub struct Executor {
     status: Mutex<Status>,
     cancel: AtomicBool,
+    /// The latest interpretation started ([`Executor::parsing`]); an older
+    /// one that finishes later is not shown.
+    interpreting: AtomicU64,
     limits: Limits,
     gimbal_speed: i16,
 }
@@ -70,32 +74,61 @@ impl Executor {
         Self {
             status: Mutex::default(),
             cancel: AtomicBool::new(false),
+            interpreting: AtomicU64::new(0),
             limits,
             gimbal_speed,
         }
     }
 
+    /// The status, also after a plan thread panicked holding it.
+    fn lock(&self) -> MutexGuard<'_, Status> {
+        self.status.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     pub fn status(&self) -> Status {
-        self.status.lock().unwrap().clone()
+        self.lock().clone()
     }
 
     pub fn limits(&self) -> &Limits {
         &self.limits
     }
 
-    /// Note that `text` is being interpreted; [`Executor::preview`] or
-    /// [`Executor::start`] ends it.
-    pub fn parsing(&self, text: &str) {
-        let mut s = self.status.lock().unwrap();
+    /// Note that `text` is being interpreted; [`Executor::preview`],
+    /// [`Executor::interpreted`] or [`Executor::start`] ends it. Returns the
+    /// interpretation's number for [`Executor::interpreted`].
+    pub fn parsing(&self, text: &str) -> u64 {
+        let mut s = self.lock();
         s.text = text.to_string();
         s.parsing = true;
         s.preview = None;
         s.preview_error = None;
+        self.interpreting.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// [`Executor::preview`] for interpretation `id`, unless a later one was
+    /// started meanwhile: an answer that arrives out of order is dropped.
+    /// Whether it was shown.
+    pub fn interpreted(
+        &self,
+        id: u64,
+        text: &str,
+        plan: Result<Plan, String>,
+        source: &str,
+    ) -> bool {
+        let mut s = self.lock();
+        if self.interpreting.load(Ordering::SeqCst) != id {
+            return false;
+        }
+        Self::show(&mut s, text, plan, source);
+        true
     }
 
     /// Record a plan for the UI to show without running it.
     pub fn preview(&self, text: &str, plan: Result<Plan, String>, source: &str) {
-        let mut s = self.status.lock().unwrap();
+        Self::show(&mut self.lock(), text, plan, source);
+    }
+
+    fn show(s: &mut Status, text: &str, plan: Result<Plan, String>, source: &str) {
         s.text = text.to_string();
         s.parsing = false;
         s.source = source.to_string();
@@ -122,11 +155,13 @@ impl Executor {
     ) -> Result<(), String> {
         plan.validate(&self.limits).map_err(|e| e.to_string())?;
         {
-            let mut s = self.status.lock().unwrap();
+            let mut s = self.lock();
             if s.running {
-                s.parsing = false;
-                return Err("a plan is already running".into());
+                return Err(ALREADY_RUNNING.into());
             }
+            // Under the lock, before the plan is visible: a cancel from now
+            // on is for this plan.
+            self.cancel.store(false, Ordering::SeqCst);
             *s = Status {
                 running: true,
                 plan: Some(plan.clone()),
@@ -140,9 +175,22 @@ impl Executor {
                 source: source.to_string(),
             };
         }
-        self.cancel.store(false, Ordering::SeqCst);
         let vehicle = Arc::clone(vehicle);
-        std::thread::spawn(move || run(&vehicle, plan));
+        std::thread::spawn(move || {
+            if std::panic::catch_unwind(AssertUnwindSafe(|| run(&vehicle, plan))).is_err() {
+                // Whatever the plan had done, it can no longer stop the motors
+                // itself: ask for a stop, and let a new plan start.
+                let stop = vehicle.motors.request(Request::Stop);
+                let ex = &vehicle.executor;
+                let at = ex.status().step;
+                let message = match stop {
+                    Ok(()) => "the plan failed (internal error); motor stop requested",
+                    Err(_) => "the plan failed (internal error)",
+                };
+                logln!("plan: {message}");
+                ex.finish(at, false, message.into());
+            }
+        });
         Ok(())
     }
 
@@ -156,19 +204,22 @@ impl Executor {
     }
 
     fn progress(&self, step: usize, message: impl Into<String>) {
-        let mut s = self.status.lock().unwrap();
+        let mut s = self.lock();
         s.step = step;
         s.message = message.into();
     }
 
     fn finish(&self, step: usize, ok: bool, message: String) {
-        let mut s = self.status.lock().unwrap();
+        let mut s = self.lock();
         s.running = false;
         s.step = step;
         s.ok = Some(ok);
         s.message = message;
     }
 }
+
+/// Why [`Executor::start`] refused a plan that is within the limits.
+pub const ALREADY_RUNNING: &str = "a plan is already running";
 
 /// Why a plan stopped short.
 enum Stop {
@@ -179,6 +230,9 @@ enum Stop {
 fn run(vehicle: &Vehicle, plan: Plan) {
     let ex = &vehicle.executor;
     logln!("plan: running: {plan}");
+    // The motors may be running because of this plan: from the moment it
+    // asks for a start (whose ACK can be lost while the motors do start)
+    // until a stop succeeds.
     let mut armed = false;
     let mut outcome = Ok(());
     let mut at = 0;
@@ -191,10 +245,13 @@ fn run(vehicle: &Vehicle, plan: Plan) {
         ex.progress(i, format!("step {}: {step}", i + 1));
         logln!("plan: step {}: {step}", i + 1);
         let result = match step {
-            Command::Arm => vehicle
-                .motors
-                .perform(Request::Start, MOTOR_STEP_TIMEOUT)
-                .map(|_| armed = true),
+            Command::Arm => {
+                armed = true;
+                vehicle
+                    .motors
+                    .perform(Request::Start, MOTOR_STEP_TIMEOUT)
+                    .map(|_| ())
+            }
             Command::Disarm => vehicle
                 .motors
                 .perform(Request::Stop, MOTOR_STEP_TIMEOUT)
@@ -259,15 +316,16 @@ fn run(vehicle: &Vehicle, plan: Plan) {
         Err(Stop::Failed(e)) => (false, format!("step {} failed: {e}", at + 1)),
     };
     if !ok && armed {
-        // Never leave the motors running because a plan stopped early. A
-        // disarm step that failed because the motors were already off (the
-        // FC refuses a redundant stop) is not a reason to alarm.
+        // Never leave the motors running because a plan stopped early,
+        // including after a start that failed: its ACK may have been lost
+        // while the motors started. A failed stop when they were already
+        // off (the FC refuses a redundant stop) is not a reason to alarm.
         message += if vehicle.motors.status().armed == Some(false) {
             "; motors already stopped"
         } else {
             match vehicle.motors.perform(Request::Stop, MOTOR_STEP_TIMEOUT) {
                 Ok(_) => "; motors stopped",
-                Err(_) => "; MOTORS STILL RUNNING: stop them",
+                Err(_) => "; MOTORS MAY BE RUNNING: stop them",
             }
         };
     }
@@ -286,7 +344,11 @@ fn gimbal_move(vehicle: &Vehicle, camera: u8, mv: GimbalMove, seconds: f32) -> R
 
 /// Sleep `d` in slices, ending early (with an empty error) on cancel.
 fn wait(ex: &Executor, d: Duration) -> Result<(), String> {
-    let deadline = Instant::now() + d;
+    // A wait too long for the clock (only with absurd configured limits)
+    // lasts until cancelled.
+    let deadline = Instant::now()
+        .checked_add(d)
+        .unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400 * 365));
     while Instant::now() < deadline {
         if ex.cancelled() {
             return Err(String::new());
@@ -350,9 +412,12 @@ mod tests {
 
     /// A vehicle whose motor requests are carried out by the real worker
     /// over the RC-link path, with a stand-in for the RC writer and the FC
-    /// that ACKs every frame after `delay`. Returns the starts (`true`) and
-    /// stops the FC saw.
-    fn with_fake_fc(delay: Duration) -> (Arc<Vehicle>, Arc<Mutex<Vec<bool>>>) {
+    /// that answers every frame after `delay` with `answer(start)` (`None`:
+    /// no ACK). Returns the starts (`true`) and stops the FC saw.
+    fn with_fc(
+        delay: Duration,
+        answer: fn(bool) -> Option<u8>,
+    ) -> (Arc<Vehicle>, Arc<Mutex<Vec<bool>>>) {
         use dji_protocol::duml::{self, Device, Header};
         use dji_protocol::flyc;
         let v = Vehicle::new();
@@ -368,13 +433,16 @@ mod tests {
                 let mut seq = 0u16;
                 loop {
                     sleep(Duration::from_millis(5));
-                    let Some(on) = v.motors.take_rc_pending() else {
+                    let Some(frame) = v.motors.take_rc_pending() else {
                         continue;
                     };
                     seq += 1;
-                    v.motors.rc_sent(seq);
-                    seen.lock().unwrap().push(on);
+                    v.motors.rc_sent(frame, seq);
+                    seen.lock().unwrap().push(frame.on);
                     sleep(delay);
+                    let Some(code) = answer(frame.on) else {
+                        continue;
+                    };
                     let h = Header {
                         sender: duml::addr(Device::FlightCtrl, 0),
                         receiver: duml::addr(Device::App, 0),
@@ -383,12 +451,17 @@ mod tests {
                         cmd_set: flyc::CMD_SET,
                         cmd_id: flyc::CMD_ID_FUNCTION_CONTROL,
                     };
-                    let ack = duml::build(&h, &[0x00]).unwrap();
+                    let ack = duml::build(&h, &[code]).unwrap();
                     v.motors.deliver_duml_ack(&duml::parse(&ack).unwrap().0);
                 }
             });
         }
         (v, seen)
+    }
+
+    /// An FC that accepts everything after `delay`.
+    fn with_fake_fc(delay: Duration) -> (Arc<Vehicle>, Arc<Mutex<Vec<bool>>>) {
+        with_fc(delay, |_| Some(0x00))
     }
 
     /// The executor's status once the plan has ended.
@@ -476,9 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_step_reports_where_it_stopped() {
-        // No motor worker runs in tests, so Arm times out; the plan reports
-        // the failed step and, having never armed, stops nothing.
+    fn a_failed_step_reports_where_it_stopped_and_stops_the_motors() {
         let v = Vehicle::new();
         v.executor.parsing("arm");
         assert!(v.executor.status().parsing);
@@ -486,15 +557,76 @@ mod tests {
             .preview("arm", Ok(Plan::new(vec![Command::Arm])), "grammar");
         let s = v.executor.status();
         assert!(s.preview.is_some() && !s.parsing && s.source == "grammar");
-        let plan = Plan::new(vec![Command::Wait { seconds: 0.1 }, Command::Arm]);
+        // The FC refuses the start and accepts the stop.
+        let (v, seen) = with_fc(Duration::ZERO, |start| Some(u8::from(start)));
+        let plan = Plan::new(vec![
+            Command::Wait { seconds: 0.1 },
+            Command::Arm,
+            Command::Wait { seconds: 1.0 },
+            Command::Disarm,
+        ]);
         v.executor.start(&v, "", plan, "test").unwrap();
-        // Make Arm fail fast: a pending stop refuses a start.
-        v.motors.request(Request::Stop).unwrap();
-        sleep(Duration::from_millis(400));
-        let s = v.executor.status();
-        assert!(!s.running);
+        let s = ended(&v);
         assert_eq!(s.ok, Some(false));
         assert!(s.message.starts_with("step 2 failed"), "{}", s.message);
+        assert!(s.message.ends_with("; motors stopped"), "{}", s.message);
+        assert_eq!(*seen.lock().unwrap(), [true, false]);
         assert!(s.preview.is_none(), "a run clears the preview");
+    }
+
+    #[test]
+    fn a_start_whose_acks_are_lost_is_still_stopped() {
+        // The FC starts the motors but none of its ACKs arrive; with no
+        // UART path the step fails. The plan must not walk away from
+        // running motors.
+        let (v, seen) = with_fc(Duration::ZERO, |start| (!start).then_some(0x00));
+        let plan = Plan::new(vec![
+            Command::Arm,
+            Command::Wait { seconds: 5.0 },
+            Command::Disarm,
+        ]);
+        v.executor.start(&v, "", plan, "test").unwrap();
+        let s = ended(&v);
+        assert!(s.message.starts_with("step 1 failed"), "{}", s.message);
+        assert!(s.message.ends_with("; motors stopped"), "{}", s.message);
+        assert_eq!(seen.lock().unwrap().last(), Some(&false));
+    }
+
+    #[test]
+    fn a_plan_that_panics_ends_and_asks_for_a_stop() {
+        let v = Vehicle::new();
+        // Poison the gimbal state: the pan step panics on it.
+        let g = Arc::clone(&v);
+        let _ = std::thread::spawn(move || {
+            let _held = g.gimbal.lock();
+            panic!("poison");
+        })
+        .join();
+        let plan = Plan::new(vec![Command::Pan {
+            camera: 1,
+            direction: Horizontal::Left,
+            seconds: 0.1,
+        }]);
+        v.executor.start(&v, "", plan, "test").unwrap();
+        let s = ended(&v);
+        assert_eq!(s.ok, Some(false));
+        assert!(s.message.contains("internal error"), "{}", s.message);
+        assert_eq!(v.motors.lock().pending, Some(Request::Stop));
+        // The executor takes plans again.
+        let next = Plan::new(vec![Command::Wait { seconds: 0.01 }]);
+        assert!(v.executor.start(&v, "", next, "test").is_ok());
+    }
+
+    #[test]
+    fn an_interpretation_that_finishes_late_is_not_shown() {
+        let ex = Executor::default();
+        let first = ex.parsing("pan left");
+        let second = ex.parsing("tilt up");
+        let plan = |c| Ok(Plan::new(vec![c]));
+        assert!(!ex.interpreted(first, "pan left", plan(Command::Disarm), "m"));
+        let s = ex.status();
+        assert!(s.parsing && s.text == "tilt up" && s.preview.is_none());
+        assert!(ex.interpreted(second, "tilt up", plan(Command::Disarm), "m"));
+        assert!(!ex.status().parsing);
     }
 }

@@ -15,6 +15,10 @@ http = "0.0.0.0:8080"      # the plain listener
 https = "0.0.0.0:8443"     # the TLS listener (browser microphone); "off" disables it  (TLS=off)
 root = "web/dist"          # the built front end
 cert_dir = "certs"         # self-signed certificate, generated on first start  (TLS_CERT_DIR)
+# Names the portal is reached by besides the Orin's own hostname and addresses
+# (e.g. a DNS name). The WebSocket refuses any other Host: a web page that
+# points its own domain at the Orin must not get to send it commands.
+hosts = []
 
 [secrets]
 dir = "secrets"            # one API key per *.key file  (SECRETS_DIR)

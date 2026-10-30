@@ -13,7 +13,7 @@
 //! `scripts/run_local_llm.sh` starts `llama-server` with the settings used
 //! for the measurements in the README.
 
-use super::{Provider, Status, openai, schema_compact};
+use super::{Failure, Provider, Status, openai, schema_compact};
 use crate::ai::online::{agent, error_detail, read};
 use dji_commands::Plan;
 
@@ -68,7 +68,7 @@ impl Provider for Local {
         &self.model
     }
 
-    fn interpret(&self, text: &str) -> Result<Plan, String> {
+    fn interpret(&self, text: &str) -> Result<Plan, Failure> {
         let mut body = openai::body(&self.model, text);
         // The grammar lets a step omit its unused fields: fewer tokens.
         body["response_format"]["json_schema"]["schema"] = schema_compact();

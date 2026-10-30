@@ -131,11 +131,14 @@ fn providers_on_the_test_sentences() {
         for _ in 0..rounds {
             for (text, accepted) in cases() {
                 let start = Instant::now();
-                let result = p.interpret(text).and_then(|plan| {
-                    plan.validate(&limits)
-                        .map(|()| plan)
-                        .map_err(|e| e.to_string())
-                });
+                let result = p
+                    .interpret(text)
+                    .map_err(|e| e.to_string())
+                    .and_then(|plan| {
+                        plan.validate(&limits)
+                            .map(|()| plan)
+                            .map_err(|e| e.to_string())
+                    });
                 let took = start.elapsed().as_millis();
                 ms.push(took);
                 total += 1;

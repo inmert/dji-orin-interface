@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use dji_protocol::flyc;
 
-use super::{ACK_TIMEOUT, ATTEMPTS, DUML_KEY, Motors, hex};
+use super::{ACK_TIMEOUT, ATTEMPTS, DUML_KEY, Motors, RcFrame, hex};
 
 /// How an RC-link attempt ended short of success.
 pub enum Fail {
@@ -15,6 +15,8 @@ pub enum Fail {
     Refused(String),
     /// Nothing came back (or nothing could be sent); worth trying the UART.
     Silent(&'static str),
+    /// A start given up because a stop is waiting; the stop goes next.
+    Abandoned,
 }
 
 /// Start/stop over the RC link: have the RC writer send `0x03/0x2a` and wait
@@ -22,11 +24,20 @@ pub enum Fail {
 pub fn send(on: bool, motors: &Motors) -> Result<String, Fail> {
     let key = DUML_KEY + u16::from(flyc::CMD_ID_FUNCTION_CONTROL);
     let mut sent_any = false;
-    for _ in 0..ATTEMPTS {
+    for attempt in 0..ATTEMPTS {
+        if on && attempt > 0 && motors.stop_requested() {
+            return Err(Fail::Abandoned);
+        }
         {
             let mut m = motors.lock();
+            m.rc_attempts += 1;
+            let frame = RcFrame {
+                on,
+                attempt: m.rc_attempts,
+            };
+            m.rc_attempt = Some(frame.attempt);
             m.rc_sent = None;
-            m.rc_pending = Some(on);
+            m.rc_pending = Some(frame);
         }
         let deadline = Instant::now() + Duration::from_millis(500);
         let seq = loop {
@@ -38,9 +49,14 @@ pub fn send(on: bool, motors: &Motors) -> Result<String, Fail> {
             }
             sleep(Duration::from_millis(10));
         };
+        {
+            // Written or not, this attempt is over for the writer: a frame
+            // not yet written must not go out late (RC busy or gone).
+            let mut m = motors.lock();
+            m.rc_attempt = None;
+            m.rc_pending = None;
+        }
         let Some(seq) = seq else {
-            // Not written (RC busy or gone); don't let it go out late.
-            motors.lock().rc_pending = None;
             continue;
         };
         sent_any = true;
@@ -91,9 +107,9 @@ mod tests {
             let mut seq = 100u16;
             loop {
                 sleep(Duration::from_millis(5));
-                if motors.take_rc_pending().is_some() {
+                if let Some(frame) = motors.take_rc_pending() {
                     seq += 1;
-                    motors.rc_sent(seq);
+                    motors.rc_sent(frame, seq);
                     if let Some(code) = code {
                         let frame = ack(seq, code);
                         motors.deliver_duml_ack(&duml::parse(&frame).unwrap().0);

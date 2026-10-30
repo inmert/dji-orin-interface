@@ -82,17 +82,23 @@ fn main() {
             cfg.web.root.display()
         );
     }
+    let local = web::tls::local_hosts();
+    let mut hosts: Vec<String> = ["localhost", "127.0.0.1", "::1"].map(String::from).into();
+    hosts.extend(local.iter().cloned());
+    hosts.extend(cfg.web.hosts.iter().cloned());
+    logln!("ws: accepting Host {hosts:?}");
     let cx = Arc::new(web::Context {
         web_root: cfg.web.root.clone(),
         feeds: Arc::clone(&feeds),
         vehicle: Arc::clone(&vehicle),
+        hosts,
     });
     {
         let (cx, addr) = (Arc::clone(&cx), cfg.web.http.clone());
         std::thread::spawn(move || web::http::serve(&addr, None, cx));
     }
     if let Some(addr) = cfg.https() {
-        match web::tls::acceptor(&cfg.web.cert_dir, &web::tls::local_hosts()) {
+        match web::tls::acceptor(&cfg.web.cert_dir, &local) {
             Ok(acceptor) => {
                 let (cx, addr) = (Arc::clone(&cx), addr.to_string());
                 std::thread::spawn(move || web::http::serve(&addr, Some(acceptor), cx));

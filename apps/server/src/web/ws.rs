@@ -51,20 +51,30 @@ fn host_of(value: &str) -> &str {
 /// Whether a client may open the socket. Browsers always send `Origin`, and
 /// WebSockets are exempt from the same-origin policy, so without this check
 /// any web page open on a LAN machine could send commands (arm the motors).
-/// A client that sends no `Origin` is not a browser page and is allowed.
-fn origin_allowed(host: Option<&str>, origin: Option<&str>) -> bool {
-    match (host, origin) {
-        (_, None) => true,
-        (Some(h), Some(o)) => host_of(h).eq_ignore_ascii_case(host_of(o)),
-        (None, Some(_)) => false,
-    }
+/// The `Host` must be one of the Orin's own names (`hosts`): a page that
+/// rebinds its own domain to the Orin's address sends that domain as both
+/// `Host` and `Origin`, which would otherwise match. A client that sends no
+/// `Origin` is not a browser page and is allowed.
+fn origin_allowed(host: Option<&str>, origin: Option<&str>, hosts: &[String]) -> bool {
+    let Some(h) = host.map(host_of) else {
+        return false;
+    };
+    let ours = hosts.iter().any(|a| {
+        h.eq_ignore_ascii_case(a)
+            || h.strip_prefix('[').and_then(|v| v.strip_suffix(']')) == Some(a)
+    });
+    ours && origin.is_none_or(|o| h.eq_ignore_ascii_case(host_of(o)))
 }
 
 // The signature is tungstenite's handshake callback; the error type is theirs.
 #[allow(clippy::result_large_err)]
-fn check_origin(req: &Request, resp: Response) -> Result<Response, ErrorResponse> {
+fn check_origin(
+    req: &Request,
+    resp: Response,
+    hosts: &[String],
+) -> Result<Response, ErrorResponse> {
     let header = |name| req.headers().get(name).and_then(|v| v.to_str().ok());
-    if origin_allowed(header("host"), header("origin")) {
+    if origin_allowed(header("host"), header("origin"), hosts) {
         return Ok(resp);
     }
     logln!(
@@ -81,7 +91,14 @@ fn check_origin(req: &Request, resp: Response) -> Result<Response, ErrorResponse
 /// unread, see [`super::http::Replay`]): stream telemetry down, apply
 /// commands up. On any exit (disconnect, error) release every gimbal — a
 /// dead-man stop.
-pub fn client<C: Conn>(stream: C, peer: String, vehicle: &Arc<Vehicle>, feeds: &Feeds) {
+/// `hosts` are the names and addresses the Orin is reached by.
+pub fn client<C: Conn>(
+    stream: C,
+    peer: String,
+    vehicle: &Arc<Vehicle>,
+    feeds: &Feeds,
+    hosts: &[String],
+) {
     // Handshake with a generous timeout; the short poll timeout is set only
     // afterwards, or a client slower than 50 ms to send its upgrade request
     // fails the handshake with WouldBlock and is dropped.
@@ -96,7 +113,10 @@ pub fn client<C: Conn>(stream: C, peer: String, vehicle: &Arc<Vehicle>, feeds: &
         logln!("ws: cannot set timeouts for {peer}: {e}");
         return;
     }
-    let mut ws = match tungstenite::accept_hdr(stream, check_origin) {
+    // The signature is tungstenite's handshake callback; the error type is theirs.
+    #[allow(clippy::result_large_err)]
+    let check = |req: &Request, resp| check_origin(req, resp, hosts);
+    let mut ws = match tungstenite::accept_hdr(stream, check) {
         Ok(ws) => ws,
         Err(e) => {
             logln!("ws: handshake with {peer} failed: {e}");
@@ -178,7 +198,13 @@ mod tests {
             let vehicle = Arc::clone(vehicle);
             std::thread::spawn(move || {
                 let (s, peer) = l.accept().unwrap();
-                client(s, peer.to_string(), &vehicle, &Feeds::new());
+                client(
+                    s,
+                    peer.to_string(),
+                    &vehicle,
+                    &Feeds::new(),
+                    &["orin".into()],
+                );
             })
         };
         let mut req = format!("ws://orin:{}/ws", addr.port())
@@ -479,17 +505,61 @@ mod tests {
         assert_eq!(host_of("http://orin:8080/"), "orin");
         assert_eq!(host_of("http://[fe80::1]:8080"), "[fe80::1]");
         assert_eq!(host_of("192.168.1.5"), "192.168.1.5");
-        assert!(origin_allowed(Some("orin:8081"), Some("http://orin:8080")));
-        assert!(origin_allowed(Some("ORIN:8081"), Some("http://orin:8080")));
-        assert!(origin_allowed(Some("orin:8081"), None)); // not a browser page
-        assert!(!origin_allowed(
-            Some("orin:8081"),
-            Some("http://evil.example")
+        let hosts = ["orin".to_string(), "192.168.1.5".into(), "fe80::1".into()];
+        let allowed = |host, origin| origin_allowed(host, origin, &hosts);
+        assert!(allowed(Some("orin:8081"), Some("http://orin:8080")));
+        assert!(allowed(Some("ORIN:8081"), Some("http://orin:8080")));
+        assert!(allowed(
+            Some("192.168.1.5:8443"),
+            Some("https://192.168.1.5:8443")
         ));
-        assert!(!origin_allowed(
+        assert!(allowed(
+            Some("[fe80::1]:8080"),
+            Some("http://[fe80::1]:8080")
+        ));
+        assert!(allowed(Some("orin:8081"), None)); // not a browser page
+        assert!(!allowed(Some("orin:8081"), Some("http://evil.example")));
+        assert!(!allowed(
             Some("orin:8081"),
             Some("http://orin.example:8080")
         ));
-        assert!(!origin_allowed(None, Some("http://orin:8080")));
+        assert!(!allowed(None, Some("http://orin:8080")));
+        assert!(!allowed(None, None));
+    }
+
+    #[test]
+    fn a_rebound_domain_is_not_the_orin() {
+        // evil.example now resolves to the Orin: the browser sends the
+        // attacker's name as both Host and Origin.
+        let hosts = ["orin".to_string(), "192.168.1.5".into()];
+        assert!(!origin_allowed(
+            Some("evil.example:8080"),
+            Some("http://evil.example:8080"),
+            &hosts
+        ));
+        assert!(!origin_allowed(Some("evil.example:8080"), None, &hosts));
+    }
+
+    #[test]
+    fn a_rebound_domain_is_refused_at_the_handshake() {
+        let v = Vehicle::new();
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let server = {
+            let v = Arc::clone(&v);
+            std::thread::spawn(move || {
+                let (s, peer) = l.accept().unwrap();
+                client(s, peer.to_string(), &v, &Feeds::new(), &["orin".into()]);
+            })
+        };
+        let mut req = format!("ws://evil.example:{}/ws", addr.port())
+            .into_client_request()
+            .unwrap();
+        let origin = format!("http://evil.example:{}", addr.port());
+        req.headers_mut().insert("Origin", origin.parse().unwrap());
+        let tcp = TcpStream::connect(addr).unwrap();
+        let refused = tungstenite::client::client(req, tcp).unwrap_err();
+        assert!(refused.to_string().contains("403"), "{refused}");
+        server.join().unwrap();
     }
 }

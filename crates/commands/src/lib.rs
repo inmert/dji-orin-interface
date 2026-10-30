@@ -110,7 +110,8 @@ impl fmt::Display for Command {
 pub struct Limits {
     /// Longest single wait.
     pub max_wait: Duration,
-    /// Longest the motors may run within one plan before it disarms.
+    /// Longest the motors may run within one plan before it disarms (every
+    /// plan that arms must disarm again).
     pub max_armed: Duration,
     /// Longest single gimbal move.
     pub max_gimbal: Duration,
@@ -149,6 +150,8 @@ pub enum Invalid {
     },
     /// A camera number other than 1 or 2.
     BadCamera(u8),
+    /// The last motor step starts them: nothing would ever stop them.
+    EndsArmed,
 }
 
 impl fmt::Display for Invalid {
@@ -167,6 +170,9 @@ impl fmt::Display for Invalid {
                 write!(f, "motors would run {seconds} s, over the {max} s limit")
             }
             Invalid::BadCamera(c) => write!(f, "there is no camera {c} (1 or 2)"),
+            Invalid::EndsArmed => {
+                f.write_str("the plan would leave the motors running: end it with a disarm")
+            }
         }
     }
 }
@@ -239,6 +245,11 @@ impl Plan {
                 }
                 _ => {}
             }
+        }
+        // The armed-time limit only means something if the plan stops the
+        // motors itself; arming and leaving them is the Arm button's job.
+        if self.ends_armed() {
+            return Err(Invalid::EndsArmed);
         }
         Ok(())
     }
@@ -363,6 +374,30 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_may_not_leave_the_motors_running() {
+        let l = Limits::default();
+        let wait = Command::Wait { seconds: 60.0 };
+        for steps in [
+            vec![Command::Arm],
+            vec![Command::Arm, wait.clone()],
+            vec![Command::Arm, Command::Disarm, Command::Arm],
+            vec![Command::Arm, Command::Link { on: true }],
+        ] {
+            assert_eq!(
+                plan(&steps).validate(&l),
+                Err(Invalid::EndsArmed),
+                "{steps:?}"
+            );
+        }
+        assert_eq!(
+            plan(&[Command::Arm, wait, Command::Disarm]).validate(&l),
+            Ok(())
+        );
+        // A plan that never arms may stop motors started elsewhere.
+        assert_eq!(plan(&[Command::Disarm]).validate(&l), Ok(()));
+    }
+
+    #[test]
     fn limits_hold_at_their_exact_boundaries() {
         let l = Limits::default();
         let wait = |seconds| Command::Wait { seconds };
@@ -392,7 +427,7 @@ mod tests {
             max_steps: 1,
             ..Limits::default()
         };
-        assert_eq!(plan(&[Command::Arm]).validate(&tight), Ok(()));
+        assert_eq!(plan(&[Command::Disarm]).validate(&tight), Ok(()));
         assert!(
             plan(&[Command::Arm, Command::Disarm])
                 .validate(&tight)

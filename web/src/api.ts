@@ -158,7 +158,7 @@ export type PlanStep =
   | { cmd: "recenter"; camera: number | null }
   | { cmd: "link"; on: boolean };
 
-/** A step as a short phrase, for the command bar. */
+/** A step as a short phrase, for the command bar (an unknown kind by its name). */
 export function stepText(s: PlanStep): string {
   switch (s.cmd) {
     case "wait": return `wait ${s.seconds} s`;
@@ -366,8 +366,12 @@ export function isMotorStatus(value: unknown): value is MotorStatus {
     && optional(value.usb_flight, v => typeof v === "string");
 }
 
-const isPlanStep = (s: unknown) => record(s) && (
-  s.cmd === "arm" || s.cmd === "disarm"
+const KNOWN_STEPS = ["arm", "disarm", "wait", "pan", "tilt", "recenter", "link"];
+// A step kind this UI does not know yet (the server's registry grew) is
+// shown by its name rather than rejecting the whole snapshot.
+const isPlanStep = (s: unknown) => record(s) && typeof s.cmd === "string" && (
+  !KNOWN_STEPS.includes(s.cmd)
+  || s.cmd === "arm" || s.cmd === "disarm"
   || (s.cmd === "wait" && finite(s.seconds))
   || ((s.cmd === "pan" || s.cmd === "tilt") && finite(s.camera) && typeof s.direction === "string" && finite(s.seconds))
   || (s.cmd === "recenter" && optional(s.camera, finite))
@@ -380,6 +384,30 @@ export function isPlanStatus(value: unknown): value is PlanStatus {
     && optional(value.ok, bool) && optional(value.plan, isPlan)
     && optional(value.preview, isPlan) && optional(value.preview_error, e => typeof e === "string")
     && bool(value.parsing) && typeof value.source === "string";
+}
+
+/** The sections a snapshot can lose without losing the rest: a reading the
+ *  server could not represent (a non-finite number arrives as null) hides
+ *  that panel's data, not the motors, the plan or the gimbals. */
+const DETACHABLE: [string, (v: unknown) => boolean][] = [
+  ["flight", isFlightLink],
+  ["usb", isUsbLink],
+  ["thermal", v => v === null || isThermalReport(v)],
+  ["video", v => record(v) && Object.values(v).every(isVideoStatus)],
+];
+
+/** Drop each malformed detachable section of a parsed snapshot (in place);
+ *  the names of those dropped. */
+export function detachMalformed(value: unknown): string[] {
+  if (!record(value)) return [];
+  const dropped: string[] = [];
+  for (const [key, valid] of DETACHABLE) {
+    if (value[key] !== undefined && !valid(value[key])) {
+      delete value[key];
+      dropped.push(key);
+    }
+  }
+  return dropped;
 }
 
 // JSON parsing alone does not validate a snapshot. Reject the whole message
@@ -439,10 +467,9 @@ export function useLink() {
         if (closed || wsRef.current !== ws) return;
         try {
           const next: unknown = JSON.parse(ev.data as string);
-          // A malformed thermal report must not hide the rest of the snapshot.
-          if (record(next) && next.thermal != null && !isThermalReport(next.thermal)) {
-            next.thermal = null;
-          }
+          // A malformed panel section must not hide the rest of the snapshot.
+          const dropped = detachMalformed(next);
+          if (dropped.length) console.warn(`snapshot: ignored malformed ${dropped.join(", ")}`);
           if (!isTelemetry(next)) return;
           if (next.frames !== previousFrames) {
             // Require an advancing counter, not a cached snapshot after reconnect.

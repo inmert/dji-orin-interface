@@ -13,7 +13,8 @@ use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use openssl::ssl::{SslAcceptor, SslStream};
 
@@ -28,6 +29,31 @@ use crate::web::{Context, ws};
 const MAX_HEAD: usize = 16 * 1024;
 /// Longest request body accepted (a voice recording).
 const MAX_BODY: usize = 32 * 1024 * 1024;
+/// How long a client may take to send its request head, however slowly it
+/// trickles it in.
+const HEAD_DEADLINE: Duration = Duration::from_secs(10);
+/// Connections served at once, on both listeners together: the page, the
+/// socket, a few videos and uploads per browser fit many times over.
+const MAX_CONNECTIONS: usize = 64;
+
+static OPEN: AtomicUsize = AtomicUsize::new(0);
+
+/// One of the [`MAX_CONNECTIONS`] connection slots, given back on drop.
+struct Slot<'a>(&'a AtomicUsize);
+
+impl<'a> Slot<'a> {
+    fn take(open: &'a AtomicUsize, max: usize) -> Option<Self> {
+        let slot = Slot(open);
+        // Over the limit, the slot just taken is given straight back.
+        (open.fetch_add(1, Ordering::SeqCst) < max).then_some(slot)
+    }
+}
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 /// A client connection, plain or TLS, with its TCP socket reachable for
 /// timeouts.
@@ -139,6 +165,12 @@ pub fn parse_head(head: &[u8]) -> Option<Head> {
 /// Read up to and including the blank line that ends the head. Returns the
 /// head bytes and whatever came after them in the same reads.
 fn read_head(conn: &mut dyn Read) -> io::Result<(Vec<u8>, Vec<u8>)> {
+    read_head_within(conn, HEAD_DEADLINE)
+}
+
+/// [`read_head`], giving up once `deadline` has passed.
+fn read_head_within(conn: &mut dyn Read, deadline: Duration) -> io::Result<(Vec<u8>, Vec<u8>)> {
+    let start = Instant::now();
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -148,6 +180,12 @@ fn read_head(conn: &mut dyn Read) -> io::Result<(Vec<u8>, Vec<u8>)> {
         }
         if buf.len() > MAX_HEAD {
             return Err(io::Error::other("request head too long"));
+        }
+        if !buf.is_empty() && start.elapsed() > deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "request head too slow",
+            ));
         }
         let n = conn.read(&mut chunk)?;
         if n == 0 {
@@ -256,14 +294,28 @@ fn handle<C: Conn + 'static>(mut conn: C, peer: String, cx: &Context) -> io::Res
             peer,
             &cx.vehicle,
             &cx.feeds,
+            &cx.hosts,
         );
         return Ok(());
     }
-    // Body, if any (the voice upload).
-    let length: usize = head
-        .header("content-length")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+    // Body, if any (the voice upload): only with a length, and read as it
+    // arrives rather than allocated up front from the claim.
+    let length = match head.header("content-length").map(str::parse::<usize>) {
+        Some(Ok(n)) => Some(n),
+        Some(Err(_)) => {
+            return respond(&mut conn, "400 Bad Request", "text/plain", b"bad length");
+        }
+        None => None,
+    };
+    if head.header("transfer-encoding").is_some() || (head.method == "POST" && length.is_none()) {
+        return respond(
+            &mut conn,
+            "411 Length Required",
+            "text/plain",
+            b"send the body with a Content-Length",
+        );
+    }
+    let length = length.unwrap_or(0);
     if length > MAX_BODY {
         return respond(
             &mut conn,
@@ -275,9 +327,11 @@ fn handle<C: Conn + 'static>(mut conn: C, peer: String, cx: &Context) -> io::Res
     let mut body = rest;
     body.truncate(body.len().min(length));
     if body.len() < length {
-        let start = body.len();
-        body.resize(length, 0);
-        conn.read_exact(&mut body[start..])?;
+        let missing = (length - body.len()) as u64;
+        (&mut conn).take(missing).read_to_end(&mut body)?;
+        if body.len() < length {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
     }
 
     match (head.method.as_str(), path.as_str()) {
@@ -366,8 +420,13 @@ pub fn serve(addr: &str, tls: Option<SslAcceptor>, cx: Arc<Context>) {
         // Generous for the request; WebSocket clients get their own below.
         let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+        let Some(slot) = Slot::take(&OPEN, MAX_CONNECTIONS) else {
+            logln!("http: {MAX_CONNECTIONS} connections open; refused {peer}");
+            continue;
+        };
         let (tls, cx) = (tls.clone(), Arc::clone(&cx));
         std::thread::spawn(move || {
+            let _slot = slot;
             let result = match tls {
                 Some(acceptor) => match acceptor.accept(stream) {
                     Ok(conn) => handle(conn, peer.clone(), &cx),
@@ -448,6 +507,27 @@ mod tests {
     }
 
     #[test]
+    fn a_head_trickled_in_too_slowly_is_dropped() {
+        let request = b"GET / HTTP/1.1\r\nHost: orin\r\n\r\n";
+        assert!(read_head_within(&mut Trickle(request), Duration::from_secs(5)).is_ok());
+        let err = read_head_within(&mut Trickle(request), Duration::ZERO).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn connection_slots_are_bounded_and_given_back() {
+        let open = AtomicUsize::new(0);
+        let a = Slot::take(&open, 2).unwrap();
+        let b = Slot::take(&open, 2).unwrap();
+        assert!(Slot::take(&open, 2).is_none());
+        drop(a);
+        let c = Slot::take(&open, 2);
+        assert!(c.is_some());
+        drop((b, c));
+        assert_eq!(open.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn hostile_heads_parse_to_nothing_or_harmlessly() {
         for bad in [
             &b""[..],
@@ -484,6 +564,7 @@ mod tests {
             web_root: dir.join("root"),
             feeds: Arc::new(crate::video::Feeds::new()),
             vehicle: dji_vehicle::Vehicle::new(),
+            hosts: vec!["localhost".into()],
         };
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut client = TcpStream::connect(l.local_addr().unwrap()).unwrap();
@@ -531,8 +612,16 @@ mod tests {
             MAX_BODY + 1
         );
         assert!(exchange(too_big.as_bytes()).starts_with("HTTP/1.1 413"));
-        // No length: no body, refused before any service is asked.
+        // No length, or a chunked body: refused before anything is read.
         let r = exchange(b"POST /voice HTTP/1.1\r\n\r\nRIFF");
+        assert!(r.starts_with("HTTP/1.1 411"), "{r}");
+        let chunked =
+            b"POST /voice HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nRIFF\r\n0\r\n\r\n";
+        assert!(exchange(chunked).starts_with("HTTP/1.1 411"));
+        let bad = b"POST /voice HTTP/1.1\r\nContent-Length: -1\r\n\r\n";
+        assert!(exchange(bad).starts_with("HTTP/1.1 400"));
+        // An empty recording is refused before any service is asked.
+        let r = exchange(b"POST /voice HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
         assert!(
             r.starts_with("HTTP/1.1 503") && r.ends_with("empty recording"),
             "{r}"

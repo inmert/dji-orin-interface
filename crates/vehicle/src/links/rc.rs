@@ -176,7 +176,11 @@ fn write_ep2(ep2: BorrowedFd<'_>, frame: &[u8]) -> Sent {
 pub fn write(ep2: OwnedFd, vehicle: &Vehicle) {
     let (gimbal, thermal, motors) = (&vehicle.gimbal, &vehicle.thermal, &vehicle.motors);
     let period = Duration::from_millis(1000 / INJECT_HZ);
-    let mut seq: u16 = 0;
+    // Start each writer's sequence numbers somewhere new, so an ACK left
+    // over from an earlier writer cannot match a new request.
+    let mut seq = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| (d.subsec_nanos() >> 8) as u16);
     let mut was_active = [false; 2];
     let send = |frame: Vec<u8>, seq: &mut u16| {
         let r = write_ep2(ep2.as_fd(), &frame);
@@ -208,8 +212,8 @@ pub fn write(ep2: OwnedFd, vehicle: &Vehicle) {
         // RC-link motor start/stop: sent once; the reader logs the FC's ACK
         // and the motors module matches it by sequence.
         let rc_motor = motors.take_rc_pending();
-        if let Some(on) = rc_motor {
-            let code = if on {
+        if let Some(frame) = rc_motor {
+            let code = if frame.on {
                 flyc::FUNCTION_START_MOTOR
             } else {
                 flyc::FUNCTION_STOP_MOTOR
@@ -217,10 +221,10 @@ pub fn write(ep2: OwnedFd, vehicle: &Vehicle) {
             let frame_seq = seq;
             match send(flyc::function_control_frame(code, seq), &mut seq) {
                 Sent::Ok => {
-                    motors.rc_sent(frame_seq);
+                    motors.rc_sent(frame, frame_seq);
                     logln!("rc: function {code:#04x} sent (seq {frame_seq})");
                 }
-                Sent::Retry => motors.requeue_rc(on),
+                Sent::Retry => motors.requeue_rc(frame),
                 Sent::Gone => return,
             }
         }

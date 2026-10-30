@@ -121,7 +121,7 @@ const USB_FLIGHT: Record<string, string> = {
   unknown: "?",
 };
 
-function Motors({ motors, enabled, uartOpen, send }: {
+export function Motors({ motors, enabled, uartOpen, send }: {
   motors: MotorStatus;
   /** The server can send start/stop on some path. */
   enabled: boolean;
@@ -165,10 +165,12 @@ function Motors({ motors, enabled, uartOpen, send }: {
       >
         {armed ? "Armed" : "Arm"}
       </button>
+      {/* Never held back by a request in progress: a stop must always be
+          sendable, and the server makes a running start give way to it. */}
       <button
         className={`tool danger${armed === false ? " on" : ""}`}
         aria-pressed={armed === false}
-        disabled={!enabled || busy}
+        disabled={!enabled}
         onClick={() => send({ cmd: "motors", on: false })}
       >
         {armed === false ? "Disarmed" : "Disarm"}
@@ -189,10 +191,18 @@ export function useVoice(onText: (text: string) => void) {
   const [state, setState] = useState<VoiceState>("idle");
   const [error, setError] = useState<string | null>(null);
   const recorder = useRef<MediaRecorder | null>(null);
+  // Held between press and release; a release that comes while the
+  // microphone is still opening must not leave it recording.
+  const held = useRef(false);
   const start = async () => {
-    if (recorder.current || !canRecord()) return;
+    if (held.current || recorder.current || !canRecord()) return;
+    held.current = true;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!held.current) {
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
       const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"]
         .find(t => MediaRecorder.isTypeSupported(t));
       const rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
@@ -220,11 +230,13 @@ export function useVoice(onText: (text: string) => void) {
       setState("listening");
       setError(null);
     } catch (e) {
+      held.current = false;
       setState("failed");
       setError(e instanceof Error ? e.message : String(e));
     }
   };
   const stop = () => {
+    held.current = false;
     const rec = recorder.current;
     if (rec && rec.state === "recording") rec.stop();
   };

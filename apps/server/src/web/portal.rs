@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use dji_common::logln;
 use dji_vehicle::Vehicle;
+use dji_vehicle::executor::ALREADY_RUNNING;
 
 use crate::ai::understand;
 use dji_vehicle::gimbal::{Camera, GimbalMove};
@@ -91,12 +92,15 @@ fn plan(vehicle: &Arc<Vehicle>, text: String, run: bool, confirmed: Option<dji_c
             Ok(()) => logln!("plan: started confirmed {text:?} ({source}): {p}"),
             Err(e) => {
                 logln!("plan: refused confirmed {text:?}: {e}");
-                ex.preview(&text, Err(e), &source);
+                // The status shows the running plan; its text stays its own.
+                if e != ALREADY_RUNNING {
+                    ex.preview(&text, Err(e), &source);
+                }
             }
         }
         return;
     }
-    vehicle.executor.parsing(&text);
+    let id = vehicle.executor.parsing(&text);
     let vehicle = Arc::clone(vehicle);
     std::thread::spawn(move || {
         let ex = &vehicle.executor;
@@ -111,16 +115,20 @@ fn plan(vehicle: &Arc<Vehicle>, text: String, run: bool, confirmed: Option<dji_c
                 Ok(()) => logln!("plan: started {text:?} ({}): {}", i.source, i.plan),
                 Err(e) => {
                     logln!("plan: refused {text:?}: {e}");
-                    ex.preview(&text, Err(e), &i.source);
+                    if e != ALREADY_RUNNING {
+                        ex.interpreted(id, &text, Err(e), &i.source);
+                    }
                 }
             },
             Ok(i) => {
                 logln!("plan: checked {text:?} ({}): {}", i.source, i.plan);
-                ex.preview(&text, Ok(i.plan), &i.source);
+                if !ex.interpreted(id, &text, Ok(i.plan), &i.source) {
+                    logln!("plan: {text:?} was overtaken by a newer check");
+                }
             }
             Err(e) => {
                 logln!("plan: refused {text:?}: {e}");
-                ex.preview(&text, Err(e), "");
+                ex.interpreted(id, &text, Err(e), "");
             }
         }
     });
@@ -196,7 +204,8 @@ pub fn handle(text: &str, vehicle: &Arc<Vehicle>, thermal: Option<&Report>) {
             Ok(()) => logln!("ws: usb_flight queued"),
             Err(e) => logln!("ws: {e}"),
         },
-        Ok(WsCommand::Plan { text, run, plan: p }) => plan(vehicle, text, run, p),
+        // Steps run only with `run`: a check that carries steps is a check.
+        Ok(WsCommand::Plan { text, run, plan: p }) => plan(vehicle, text, run, p.filter(|_| run)),
         Ok(WsCommand::Cancel) => {
             vehicle.executor.cancel();
             logln!("plan: cancel requested");
@@ -451,6 +460,40 @@ mod tests {
         handle(r#"{"cmd":"cancel"}"#, &v, None);
         std::thread::sleep(std::time::Duration::from_millis(250));
         assert_eq!(v.executor.status().message, "cancelled");
+    }
+
+    #[test]
+    fn steps_sent_without_run_are_only_checked() {
+        let v = Vehicle::new();
+        handle(
+            r#"{"cmd":"plan","text":"arm for 1 second","plan":{"steps":[{"cmd":"wait","seconds":5}]}}"#,
+            &v,
+            None,
+        );
+        let s = settled(&v);
+        assert!(!s.running && s.plan.is_none(), "{s:?}");
+        // The sentence was interpreted instead, and only shown.
+        assert_eq!(s.preview.map(|p| p.steps.len()), Some(3));
+    }
+
+    #[test]
+    fn a_refused_run_leaves_the_running_plan_as_it_is() {
+        let v = Vehicle::new();
+        let run = |text: &str, seconds: f32| {
+            serde_json::json!({"cmd": "plan", "text": text, "run": true,
+                "plan": {"steps": [{"cmd": "wait", "seconds": seconds}]}})
+            .to_string()
+        };
+        handle(&run("first", 2.0), &v, None);
+        handle(&run("second", 0.1), &v, None);
+        let s = v.executor.status();
+        assert!(s.running);
+        assert_eq!(
+            (s.text.as_str(), s.preview_error),
+            ("first", None),
+            "the status still describes the running plan"
+        );
+        handle(r#"{"cmd":"cancel"}"#, &v, None);
     }
 
     #[test]

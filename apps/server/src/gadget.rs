@@ -94,7 +94,10 @@ pub fn run(
             let _ = answer_setup(ep0.as_fd(), &s);
         }
         Event::Bind => logln!("gadget: BIND"),
-        Event::Unbind => logln!("gadget: UNBIND"),
+        Event::Unbind => {
+            logln!("gadget: UNBIND");
+            vehicle.telemetry.lock().unwrap().link_up = false;
+        }
         Event::Other(_) => {}
     });
 }

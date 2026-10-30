@@ -110,16 +110,6 @@ const malformed = [
   { ...good, streams: { bad: { from: 'Gimbal', to: 'App', count: '1' } } },
   { ...good, gimbals: { 0: null } },
   { ...good, gimbals: { 0: { index: 0, pitch: {}, roll: 0, yaw: 0 } } },
-  { ...good, flight: null },
-  { ...good, flight: { port: '/dev/ttyTHS1', open: true, frames: 1, rejected: 0 } },
-  { ...good, flight: flightWith({ attitude: { roll: 0, pitch: 'x', yaw: 0 } }) },
-  { ...good, flight: flightWith({ status: { flight: 0, mode: 6, gear: 0, error: 0, flight_name: 'Stopped' } }) },
-  { ...good, flight: flightWith({ gps: { date: 1, time: 1, latitude: 0, longitude: 0, hfsl: 0, hdop: 0, pdop: 0, fix: 0, satellites: 0, velocity_ned: [0, 0] } }) },
-  { ...good, flight: flightWith({ mag: [1, 2] }) },
-  { ...good, usb: null },
-  { ...good, usb: { ...usbLink, gimbals: { 0: { index: 0, pitch: 0 } } } },
-  { ...good, usb: { ...usbLink, osd: { ...usbOsd, yaw: '143' } } },
-  { ...good, usb: { ...usbLink, osd: { ...usbOsd, unverified: { latitude: 0, longitude: 0, height: 0 } } } },
   { ...good, motors: { busy: 'no', last: null, ok: null, message: '' } },
   { ...good, motors: { busy: false, last: true, ok: null, message: '' } },
   { ...good, motors: { busy: false, last: null, ok: null } },
@@ -132,6 +122,34 @@ for (const value of malformed) {
   sockets[1].onmessage({ data: JSON.stringify(value) });
   assert.equal(h.states[1].value.frames, 2, 'malformed snapshot preserves last valid data');
   assert.equal(h.states[2].value, true, 'malformed snapshot cannot restore freshness');
+}
+// A malformed panel section (a non-finite reading arrives as null) is
+// dropped on its own: the rest of the snapshot, motors and plan included,
+// still arrives. Same frame count, so freshness is untouched.
+const detached = [
+  { ...good, frames: 2, flight: null },
+  { ...good, frames: 2, flight: { port: '/dev/ttyTHS1', open: true, frames: 1, rejected: 0 } },
+  { ...good, frames: 2, flight: flightWith({ attitude: { roll: 0, pitch: 'x', yaw: 0 } }) },
+  { ...good, frames: 2, flight: flightWith({ status: { flight: 0, mode: 6, gear: 0, error: 0, flight_name: 'Stopped' } }) },
+  { ...good, frames: 2, flight: flightWith({ gps: { date: 1, time: 1, latitude: 0, longitude: 0, hfsl: 0, hdop: 0, pdop: 0, fix: 0, satellites: 0, velocity_ned: [0, 0] } }) },
+  { ...good, frames: 2, flight: flightWith({ mag: [1, 2] }) },
+  { ...good, frames: 2, usb: null },
+  { ...good, frames: 2, usb: { ...usbLink, gimbals: { 0: { index: 0, pitch: 0 } } } },
+  { ...good, frames: 2, usb: { ...usbLink, osd: { ...usbOsd, yaw: '143' } } },
+  { ...good, frames: 2, usb: { ...usbLink, osd: { ...usbOsd, unverified: { latitude: 0, longitude: 0, height: 0 } } } },
+  { ...good, frames: 2, flight: flightWith({ attitude: { roll: null, pitch: 0, yaw: 0 } }) },
+  { ...good, frames: 2, usb: { ...usbLink, osd: { ...usbOsd, unverified: { latitude: null, longitude: 0, height: 0, velocity: [0, 0, 0] } } } },
+  { ...good, frames: 2, video: { cam1: { state: 'playing' } } },
+];
+for (const value of detached) {
+  const marked = { ...value, motors: { busy: false, last: 'stop', ok: true, message: 'kept', armed: false } };
+  sockets[1].onmessage({ data: JSON.stringify(marked) });
+  const t = h.states[1].value;
+  assert.equal(t.motors.message, 'kept', 'the rest of the snapshot arrives');
+  assert.ok(t.flight === undefined || value.flight === undefined, 'a malformed flight section is dropped');
+  assert.ok(t.usb === undefined || value.usb === undefined, 'a malformed USB section is dropped');
+  assert.ok(t.video === undefined || value.video === undefined, 'a malformed video section is dropped');
+  assert.equal(h.states[2].value, true, 'a dropped section cannot restore freshness');
 }
 sockets[1].onmessage({ data: JSON.stringify({ ...good,
   streams: { route: { from: 'Gimbal', to: 'App', cmd_set: 4, cmd_id: 5, count: 3, last_len: 12 } },
@@ -260,3 +278,47 @@ const table = StreamsTable({ stale: false, telemetry: { frames: 1, streams: {
   route: { from: 'Gimbal', to: 'App', cmd_set: 4, cmd_id: 5, count: 1, last_len: 12 },
 }, gimbals: {} } });
 assert.ok(JSON.stringify(table).includes('1 of 1') || JSON.stringify(table).includes('[1," of ",1," streams"]'), 'displayed command IDs match search');
+
+// Disarm stays available while a motor request is in progress (a start over
+// the UART can take many seconds); Arm waits for it.
+{
+  const { Motors } = load('src/telemetry/FlightPanel.tsx', harness().react,
+    { window: { confirm: () => true, isSecureContext: false }, navigator: {} });
+  const sent = [];
+  const busy = { busy: true, last: 'start', ok: null, message: 'starting motors…', armed: null };
+  const [, arm, disarm] = buttons(Motors({ motors: busy, enabled: true, uartOpen: false, send: c => sent.push(c) }));
+  assert.equal(arm.props.disabled, true, 'no second start while one runs');
+  assert.equal(disarm.props.disabled, false, 'a stop can always be sent');
+  disarm.props.onClick();
+  assert.equal(JSON.stringify(sent.at(-1)), JSON.stringify({ cmd: 'motors', on: false }));
+  console.log('PASS: disarm available during a motor request');
+}
+
+// A tap on Talk shorter than the microphone takes to open must not leave it
+// recording.
+(async () => {
+  let opened;
+  let recorders = 0;
+  let stopped = 0;
+  class MediaRecorder {
+    static isTypeSupported() { return true; }
+    constructor() { recorders++; }
+    start() {}
+  }
+  const navigator = { mediaDevices: { getUserMedia: () => new Promise(resolve => { opened = resolve; }) } };
+  const { useVoice } = load('src/telemetry/FlightPanel.tsx', harness().react,
+    { window: { isSecureContext: true }, navigator, MediaRecorder });
+  const voice = useVoice(() => {});
+  const pressed = voice.start();
+  voice.stop(); // released before the microphone opened
+  opened({ getTracks: () => [{ stop: () => { stopped++; } }] });
+  await pressed;
+  assert.equal(recorders, 0, 'no recording starts after the release');
+  assert.equal(stopped, 1, 'the microphone is closed again');
+  // A normal hold still records.
+  const held = voice.start();
+  opened({ getTracks: () => [{ stop: () => { stopped++; } }] });
+  await held;
+  assert.equal(recorders, 1);
+  console.log('PASS: a quick tap on Talk does not leave the microphone recording');
+})().catch(e => { console.error(e); process.exit(1); });

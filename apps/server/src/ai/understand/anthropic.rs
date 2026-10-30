@@ -5,7 +5,7 @@
 //! from the organisation's cost report, which needs an Admin API key
 //! (`sk-ant-admin…`, in `secrets/` too) — a workspace key is refused there.
 
-use super::{Provider, Status, instructions, plan_from_json, schema};
+use super::{Failure, Provider, Status, instructions, plan_from_json, schema};
 use crate::ai::online::{agent, error_detail, read};
 use dji_commands::Plan;
 
@@ -80,7 +80,7 @@ impl Provider for Anthropic {
         &self.model
     }
 
-    fn interpret(&self, text: &str) -> Result<Plan, String> {
+    fn interpret(&self, text: &str) -> Result<Plan, Failure> {
         let body = serde_json::json!({
             "model": self.model,
             // Thinking tokens count against this; a tight cap truncates the plan.
@@ -100,23 +100,24 @@ impl Provider for Anthropic {
             .map_err(|e| format!("Claude request failed: {e}"))?;
         let (status, text) = read(&mut resp)?;
         if status != 200 {
-            return Err(format!("Claude: HTTP {status}: {}", error_detail(&text)));
+            return Err(format!("Claude: HTTP {status}: {}", error_detail(&text)).into());
         }
         let v: serde_json::Value =
             serde_json::from_str(&text).map_err(|e| format!("Claude response: {e}"))?;
         if v["stop_reason"] == "refusal" {
-            return Err(format!(
+            return Err(Failure::Declined(format!(
                 "Claude declined: {}",
                 v["stop_details"]["explanation"]
                     .as_str()
                     .unwrap_or("no explanation")
-            ));
+            )));
         }
         if v["stop_reason"] != "end_turn" {
             return Err(format!(
                 "Claude stopped early ({}); the plan would be incomplete",
                 v["stop_reason"].as_str().unwrap_or("unknown")
-            ));
+            )
+            .into());
         }
         let json = v["content"]
             .as_array()

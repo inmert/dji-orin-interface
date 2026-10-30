@@ -27,7 +27,7 @@ pub fn acceptor(dir: &Path, hosts: &[String]) -> Result<SslAcceptor, String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let (c, k) = generate(hosts).map_err(|e| format!("generate certificate: {e}"))?;
         std::fs::write(&crt, c).map_err(|e| format!("{}: {e}", crt.display()))?;
-        std::fs::write(&key, k).map_err(|e| format!("{}: {e}", key.display()))?;
+        write_private(&key, &k).map_err(|e| format!("{}: {e}", key.display()))?;
         logln!(
             "tls: new self-signed certificate in {} for {hosts:?}",
             dir.display()
@@ -41,6 +41,19 @@ pub fn acceptor(dir: &Path, hosts: &[String]) -> Result<SslAcceptor, String> {
         .map_err(|e| format!("{}: {e}", crt.display()))?;
     b.check_private_key().map_err(|e| e.to_string())?;
     Ok(b.build())
+}
+
+/// Write `data` to a new file only its owner can read (the private key).
+fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(data)
 }
 
 /// A fresh self-signed certificate and key, PEM-encoded.
@@ -120,6 +133,16 @@ mod tests {
             .collect();
         assert!(names.contains(&"orin".to_string()) && names.contains(&"localhost".to_string()));
         assert!(names.iter().any(|n| n.contains("10, 0, 0, 5")), "{names:?}");
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.join("server.key"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "the private key is readable by others: {mode:o}"
+        );
         // Second call reuses the files.
         let before = std::fs::metadata(dir.join("server.key"))
             .unwrap()

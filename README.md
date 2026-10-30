@@ -347,7 +347,8 @@ below; the first with a key in `secrets/` is used, `LLM_PROVIDER` /
 `LLM_MODEL` choose), asked for the plan as structured output against a
 fixed schema, so free-form phrasing works. The local grammar
 (`crates/commands`) is the fallback when no model is configured or the call
-fails, and understands:
+fails (a model that declines a sentence, such as a flight request, has the
+last word: the grammar is not asked), and understands:
 
 - motors: `arm` / `start motors` / `spin up`, `disarm` / `stop`; `arm for N`
   always disarms again afterwards;
@@ -360,8 +361,11 @@ joined by *then*, *and* or commas. A JSON plan
 (`{"steps":[{"cmd":"arm"},{"cmd":"wait","seconds":5},{"cmd":"disarm"}]}`) is
 accepted in the same box and skips both. Whatever produced it, every plan
 is checked on the Orin against the limits (60 s per wait, 60 s of motors per
-plan, 10 s per gimbal move) before it runs, and a plan that fails or is
-cancelled after arming stops the motors first. The bar says which source
+plan, 10 s per gimbal move) before it runs. A plan that arms must disarm by
+its end (a lone `arm` is refused; the Arm button is for that), and a plan
+that fails or is cancelled after asking for a start stops the motors first,
+even if the start itself seemed to fail (its ACK may have been lost while
+the motors started). The bar says which source
 made the plan. Motor steps go out over the same path as the buttons: the RC link
 first. Verified on the aircraft with `arm for 3 seconds then disarm`
 (2026-10-29, props on): ACK 0.2 s after each step, FC status On ground for
@@ -414,7 +418,11 @@ HTTPS listener:
 `https://<orin-ip>:8443/`, with a self-signed certificate the server
 generates on first start into `certs/` (accept the browser's warning once;
 `TLS=off` disables the listener). The WebSocket is served on the same port
-as the page (`/ws`), so there is nothing else to accept.
+as the page (`/ws`), so there is nothing else to accept. It accepts only the
+Orin's own hostname and addresses as the page's host (plus any names in
+`[web] hosts`), so a web page elsewhere cannot reach it by pointing its own
+domain at the Orin. Disarm stays available while a motor request is in
+progress, and a start in progress gives way to it.
 
 **Direct USB link.** The server likewise reads the aircraft's USB API port
 (mode switch in the PC position) read-only: the first `ttyACM` that is not the

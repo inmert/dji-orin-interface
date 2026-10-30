@@ -51,13 +51,44 @@ pub struct Status {
     pub note: String,
 }
 
+/// Why a model gave no plan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// The model answered and refused: not a drone command, ambiguous,
+    /// unsafe, or a step that does not exist. Final: the grammar is not
+    /// asked to second-guess it.
+    Declined(String),
+    /// No usable answer (network, HTTP error, malformed output): the
+    /// grammar may still understand the sentence.
+    Failed(String),
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Failure::Declined(why) | Failure::Failed(why) => f.write_str(why),
+        }
+    }
+}
+
+impl From<String> for Failure {
+    fn from(why: String) -> Self {
+        Failure::Failed(why)
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(why: &str) -> Self {
+        Failure::Failed(why.into())
+    }
+}
+
 /// One online model.
 pub trait Provider: Send + Sync {
     fn name(&self) -> &'static str;
     fn model(&self) -> &str;
-    /// The plan for `text`, or why there is none (not a drone command,
-    /// ambiguous, unsafe, or the service failed).
-    fn interpret(&self, text: &str) -> Result<Plan, String>;
+    /// The plan for `text`, or why there is none.
+    fn interpret(&self, text: &str) -> Result<Plan, Failure>;
     /// Check the key and, where offered, spend or balance.
     fn status(&self) -> Status;
 }
@@ -169,6 +200,11 @@ pub fn statuses() -> Vec<Status> {
 /// The plan for `text`: JSON as given, else the model, else the grammar.
 /// The plan is **not** yet checked against the limits.
 pub fn interpret(text: &str) -> Result<Interpreted, String> {
+    interpret_with(text, registry().active())
+}
+
+/// [`interpret`] with `model` as the active provider.
+fn interpret_with(text: &str, model: Option<&dyn Provider>) -> Result<Interpreted, String> {
     let text = text.trim();
     if text.starts_with('{') {
         let plan = serde_json::from_str::<Plan>(text).map_err(|e| format!("bad plan JSON: {e}"))?;
@@ -177,7 +213,7 @@ pub fn interpret(text: &str) -> Result<Interpreted, String> {
             source: "json".into(),
         });
     }
-    let model_error = match registry().active() {
+    let model_error = match model {
         None => None,
         Some(p) => {
             let start = Instant::now();
@@ -194,7 +230,11 @@ pub fn interpret(text: &str) -> Result<Interpreted, String> {
                         source: p.model().to_string(),
                     });
                 }
-                Err(e) => {
+                Err(Failure::Declined(why)) => {
+                    logln!("understand: {} declined: {why}", p.name());
+                    return Err(why);
+                }
+                Err(Failure::Failed(e)) => {
                     logln!("understand: {} failed: {e}; trying the grammar", p.name());
                     Some(e)
                 }
@@ -215,7 +255,7 @@ pub fn interpret(text: &str) -> Result<Interpreted, String> {
 
 /// A [`Plan`] from the JSON the schema produces: the model's `problem` is
 /// the error when it gave one, else every step decoded by the registry.
-pub fn plan_from_json(text: &str) -> Result<Plan, String> {
+pub fn plan_from_json(text: &str) -> Result<Plan, Failure> {
     #[derive(serde::Deserialize)]
     struct Answer {
         #[serde(default)]
@@ -226,7 +266,7 @@ pub fn plan_from_json(text: &str) -> Result<Plan, String> {
     let a: Answer =
         serde_json::from_str(text).map_err(|e| format!("model returned invalid JSON: {e}"))?;
     if let Some(problem) = a.problem.filter(|p| !p.is_empty()) {
-        return Err(problem);
+        return Err(Failure::Declined(problem));
     }
     let steps = a
         .steps
@@ -234,7 +274,7 @@ pub fn plan_from_json(text: &str) -> Result<Plan, String> {
         .map(Command::from_step)
         .collect::<Result<Vec<_>, _>>()?;
     if steps.is_empty() {
-        return Err("the model found nothing to do".into());
+        return Err(Failure::Declined("the model found nothing to do".into()));
     }
     Ok(Plan::new(steps))
 }
@@ -272,7 +312,7 @@ mod tests {
         );
         assert_eq!(
             plan_from_json(r#"{"steps":[],"problem":"take-off is not available"}"#).unwrap_err(),
-            "take-off is not available"
+            Failure::Declined("take-off is not available".into())
         );
         assert!(plan_from_json(r#"{"steps":[{"cmd":"pan","seconds":1,"camera":1,"direction":"up","on":null}],"problem":null}"#).is_err());
         assert!(plan_from_json("nonsense").is_err());
@@ -316,5 +356,51 @@ mod tests {
             }
         );
         assert_eq!(i.plan.steps.len(), 3);
+    }
+
+    /// A model that always gives `answer`.
+    struct Fixed(Result<Plan, Failure>);
+
+    impl Provider for Fixed {
+        fn name(&self) -> &'static str {
+            "fixed"
+        }
+        fn model(&self) -> &str {
+            "fixed-1"
+        }
+        fn interpret(&self, _: &str) -> Result<Plan, Failure> {
+            self.0.clone()
+        }
+        fn status(&self) -> Status {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn a_refusal_is_final_and_a_failure_falls_back_to_the_grammar() {
+        // "move up" is aircraft movement to the model, a gimbal tilt to the
+        // grammar: the model's refusal must stand.
+        let declined = Fixed(Err(Failure::Declined(
+            "moving the aircraft is not available".into(),
+        )));
+        assert_eq!(
+            interpret_with("move up for 2 seconds", Some(&declined)).err(),
+            Some("moving the aircraft is not available".to_string())
+        );
+        let failed = Fixed(Err(Failure::Failed("Claude: HTTP 529: overloaded".into())));
+        let i = interpret_with("move up for 2 seconds", Some(&failed)).unwrap();
+        assert_eq!(i.source, "grammar");
+        // A model that found nothing to do has declined too.
+        assert_eq!(
+            plan_from_json(r#"{"steps":[],"problem":null}"#),
+            Err(Failure::Declined("the model found nothing to do".into()))
+        );
+        // Malformed output is a failure, not a refusal.
+        assert!(matches!(plan_from_json("{"), Err(Failure::Failed(_))));
+        let answer = Fixed(Ok(Plan::new(vec![Command::Disarm])));
+        assert_eq!(
+            interpret_with("stop", Some(&answer)).unwrap().source,
+            "fixed-1"
+        );
     }
 }

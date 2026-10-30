@@ -186,10 +186,15 @@ fn relay(
     let mut dump = Dump::open(dump);
     let mut decoder = duml::Decoder::new();
     let mut buf = vec![0u8; 16384];
+    let mut disabled = false;
     loop {
         match read(&mut buf) {
             Ok(0) => sleep(Duration::from_millis(2)),
             Ok(n) => {
+                if disabled {
+                    logln!("{label}: endpoint enabled again; relaying");
+                    disabled = false;
+                }
                 // Forward the raw bytes first (lowest added latency), then log.
                 let mut sent = 0;
                 while sent < n {
@@ -230,12 +235,24 @@ fn relay(
             Err(e) if e.kind() == ErrorKind::Interrupted => {}
             Err(e) => {
                 let code = e.raw_os_error().unwrap_or(0);
-                if code == usb::errno::ENODEV || code == usb::errno::ESHUTDOWN {
+                if code == usb::errno::ENODEV {
                     logln!("{label}: endpoint gone; relay stopping");
                     if let Some(d) = dump.as_mut() {
                         let _ = d.data.flush().and_then(|()| d.idx.flush());
                     }
                     return;
+                }
+                if code == usb::errno::ESHUTDOWN {
+                    // The RC disabled the gadget (power-cycled, say): wait for
+                    // the next ENABLE on the same endpoint, as the server does
+                    // (the event loop starts the relays only once).
+                    if !disabled {
+                        logln!("{label}: endpoint disabled; waiting for ENABLE");
+                        disabled = true;
+                        decoder = duml::Decoder::new();
+                    }
+                    sleep(Duration::from_millis(20));
+                    continue;
                 }
                 logln!("{label}: read error: {e}");
                 sleep(Duration::from_millis(50));
@@ -324,4 +341,42 @@ fn main() {
         }
         Event::Other(_) => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::io;
+
+    use super::*;
+
+    #[test]
+    fn a_relay_waits_out_a_disable_and_stops_when_the_endpoint_is_gone() {
+        let os = |code| Err(io::Error::from_raw_os_error(code));
+        let reads = RefCell::new(vec![
+            Ok(b"abc".to_vec()),
+            os(usb::errno::ESHUTDOWN), // the RC power-cycles
+            os(usb::errno::ESHUTDOWN),
+            Ok(b"def".to_vec()), // and enables the gadget again
+            os(usb::errno::ENODEV),
+        ]);
+        reads.borrow_mut().reverse();
+        let forwarded = RefCell::new(Vec::new());
+        relay(
+            "TEST",
+            "test",
+            |buf| {
+                let next = reads.borrow_mut().pop().expect("the relay stops at ENODEV");
+                next.map(|data| {
+                    buf[..data.len()].copy_from_slice(&data);
+                    data.len()
+                })
+            },
+            |data| {
+                forwarded.borrow_mut().extend_from_slice(data);
+                Ok(data.len())
+            },
+        );
+        assert_eq!(forwarded.into_inner(), b"abcdef");
+    }
 }

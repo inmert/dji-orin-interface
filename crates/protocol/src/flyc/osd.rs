@@ -49,6 +49,13 @@ fn f64_at(p: &[u8], off: usize) -> f64 {
     f64::from_le_bytes(p[off..off + 8].try_into().unwrap())
 }
 
+/// Degrees from the wire's f64 radians; 0 (no fix) for a value that is not
+/// a number, which unverified offsets can decode to and JSON cannot carry.
+fn degrees(radians: f64) -> f64 {
+    let d = radians.to_degrees();
+    if d.is_finite() { d } else { 0.0 }
+}
+
 fn tenths(v: i16) -> f32 {
     f32::from(v) / 10.0
 }
@@ -74,8 +81,8 @@ impl Osd {
             mode_name: mode_name(mode),
             satellites: p[36],
             unverified: Unverified {
-                longitude: f64_at(p, 0).to_degrees(),
-                latitude: f64_at(p, 8).to_degrees(),
+                longitude: degrees(f64_at(p, 0)),
+                latitude: degrees(f64_at(p, 8)),
                 height: tenths(i16_at(p, 16)),
                 velocity: [18, 20, 22].map(|o| tenths(i16_at(p, o))),
             },
@@ -123,6 +130,17 @@ mod tests {
         assert_eq!((o.pitch, o.roll, o.yaw), (1.3, 2.3, 143.0));
         assert_eq!((o.mode, o.mode_name, o.satellites), (6, "P-GPS", 0));
         assert_eq!(o.unverified, Unverified::default());
+    }
+
+    #[test]
+    fn unrepresentable_positions_read_as_no_fix() {
+        let mut p = payload();
+        p[0..8].copy_from_slice(&f64::NAN.to_le_bytes());
+        p[8..16].copy_from_slice(&f64::INFINITY.to_le_bytes());
+        let bytes = frame(duml::addr(Device::FlightCtrl, 0), &p);
+        let o = Osd::decode(&duml::parse(&bytes).unwrap().0).unwrap();
+        assert_eq!((o.unverified.latitude, o.unverified.longitude), (0.0, 0.0));
+        assert_eq!(o.yaw, 143.0, "the verified fields are untouched");
     }
 
     #[test]

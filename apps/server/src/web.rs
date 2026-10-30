@@ -21,4 +21,7 @@ pub struct Context {
     pub web_root: PathBuf,
     pub feeds: Arc<Feeds>,
     pub vehicle: Arc<Vehicle>,
+    /// The names and addresses the Orin is reached by; the WebSocket takes
+    /// only these as `Host`.
+    pub hosts: Vec<String>,
 }

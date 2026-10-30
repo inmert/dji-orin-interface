@@ -3,7 +3,7 @@
 //! asks `GET /v1/models/{model}` to prove the key; OpenAI's API exposes no
 //! balance.
 
-use super::{Provider, Status, instructions, plan_from_json, schema};
+use super::{Failure, Provider, Status, instructions, plan_from_json, schema};
 use crate::ai::online::{agent, error_detail, read};
 use dji_commands::Plan;
 
@@ -35,7 +35,7 @@ impl Provider for OpenAi {
         &self.model
     }
 
-    fn interpret(&self, text: &str) -> Result<Plan, String> {
+    fn interpret(&self, text: &str) -> Result<Plan, Failure> {
         let mut resp = agent()
             .post(&format!("{API}/chat/completions"))
             .header("Authorization", &self.auth())
@@ -94,14 +94,14 @@ pub(super) fn body(model: &str, text: &str) -> serde_json::Value {
 
 /// The plan out of a chat-completions response (`who` names the service in
 /// errors): the HTTP status, a refusal, then the message content as JSON.
-pub(super) fn plan_from_response(who: &str, status: u16, text: &str) -> Result<Plan, String> {
+pub(super) fn plan_from_response(who: &str, status: u16, text: &str) -> Result<Plan, Failure> {
     if status != 200 {
-        return Err(format!("{who}: HTTP {status}: {}", error_detail(text)));
+        return Err(format!("{who}: HTTP {status}: {}", error_detail(text)).into());
     }
     let v: serde_json::Value =
         serde_json::from_str(text).map_err(|e| format!("{who} response: {e}"))?;
     if let Some(r) = v["choices"][0]["message"]["refusal"].as_str() {
-        return Err(format!("{who} declined: {r}"));
+        return Err(Failure::Declined(format!("{who} declined: {r}")));
     }
     let json = v["choices"][0]["message"]["content"]
         .as_str()
@@ -127,12 +127,12 @@ mod tests {
         );
         assert_eq!(
             plan_from_response("X", 401, r#"{"error":{"message":"bad key"}}"#).unwrap_err(),
-            "X: HTTP 401: bad key"
+            Failure::Failed("X: HTTP 401: bad key".into())
         );
         assert_eq!(
             plan_from_response("X", 200, r#"{"choices":[{"message":{"refusal":"no"}}]}"#)
                 .unwrap_err(),
-            "X declined: no"
+            Failure::Declined("X declined: no".into())
         );
         assert!(plan_from_response("X", 200, r#"{"choices":[]}"#).is_err());
     }

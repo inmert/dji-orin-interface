@@ -54,3 +54,22 @@ const old = copy();
 for (const k of ['flight', 'usb', 'thermal', 'thermal_auto', 'video', 'motors', 'plan']) delete old[k];
 assert.ok(api.isTelemetry(old), 'a snapshot without the optional sections');
 console.log('PASS: malformed sections rejected, absent optional sections accepted');
+
+// A step kind the server added before this UI knew it is shown by name, not
+// a reason to drop every snapshot.
+{
+  const s = copy();
+  s.plan.preview.steps.push({ cmd: 'takeoff', height: 2 });
+  assert.ok(api.isTelemetry(s), 'an unknown step kind is accepted');
+  assert.equal(api.stepText({ cmd: 'takeoff' }), 'takeoff');
+  const bad = copy();
+  bad.plan.preview.steps.push({ cmd: 7 });
+  assert.equal(api.isTelemetry(bad), false, 'a step must still name its kind');
+  // A section with a reading the server could not represent is dropped
+  // on its own.
+  const nan = copy();
+  nan.usb.osd.unverified.latitude = null;
+  assert.deepEqual([...api.detachMalformed(nan)], ['usb']);
+  assert.ok(api.isTelemetry(nan) && nan.usb === undefined && nan.flight !== undefined);
+  console.log('PASS: unknown step kinds and unrepresentable readings degrade, not freeze');
+}

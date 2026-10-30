@@ -56,6 +56,9 @@ const RC_QUEUE: usize = 512;
 const DIAG_LOG_LINES: usize = 8;
 /// Reject malformed units before they can consume unbounded memory/CPU.
 const MAX_NAL: usize = 2 * 1024 * 1024;
+/// Longest JPEG kept while waiting for its end marker; a decoder that never
+/// ends an image cannot grow the buffer past this.
+const MAX_JPEG: usize = 8 * 1024 * 1024;
 
 pub struct Frame {
     pub jpeg: Vec<u8>,
@@ -597,6 +600,11 @@ impl JpegSplitter {
             };
             let Some(end) = find(&self.buf, &[0xff, 0xd9], start + 2) else {
                 self.buf.drain(..start);
+                if self.buf.len() > MAX_JPEG {
+                    // No end in sight: drop it, keeping a possible next start.
+                    let keep = usize::from(self.buf.last() == Some(&0xff));
+                    self.buf.drain(..self.buf.len() - keep);
+                }
                 break;
             };
             out.push(self.buf[start..end + 2].to_vec());
@@ -648,6 +656,18 @@ mod tests {
             f.push(&[0, 0, 1, 0x67, 42, 0, 0, 1, 0x09]),
             [0, 0, 1, 0x67, 42]
         );
+    }
+
+    #[test]
+    fn an_image_that_never_ends_is_dropped_and_the_next_one_found() {
+        let mut s = JpegSplitter::default();
+        assert!(s.push(&[0xff, 0xd8]).is_empty());
+        let filler = vec![0x11; 1024 * 1024];
+        for _ in 0..(MAX_JPEG / filler.len() + 2) {
+            assert!(s.push(&filler).is_empty());
+            assert!(s.buf.len() <= MAX_JPEG + filler.len());
+        }
+        assert_eq!(s.push(A), vec![A.to_vec()]);
     }
 
     #[test]

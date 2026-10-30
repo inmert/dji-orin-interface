@@ -14,6 +14,7 @@
 //! `cmd` first, which the models follow when generating.
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -224,6 +225,12 @@ fn kind_schema(kind: Kind) -> Value {
 /// the schema into a grammar: a step is then a few tokens instead of a null
 /// per unused field. [`Command::from_step`] reads a missing field as null.
 pub fn schema_compact() -> Value {
+    // Built once: the registry is fixed, and every model request sends it.
+    static SCHEMA: OnceLock<Value> = OnceLock::new();
+    SCHEMA.get_or_init(build_compact).clone()
+}
+
+fn build_compact() -> Value {
     let mut props = serde_json::Map::new();
     props.insert(
         "cmd".into(),
@@ -278,7 +285,8 @@ pub fn instructions() -> String {
         "You translate spoken or typed instructions for a DJI Matrice 210 drone into a list of \
          steps. The only steps are: {steps}. Camera defaults to 1 and a gimbal move defaults to \
          1 second when not stated. 'arm for N seconds' means arm, wait N, disarm; do not add a \
-         disarm when the motors are already stopped at that point. Flight (take off, land, hover, \
+         disarm when the motors are already stopped at that point. A plan that arms must disarm \
+         again by its end: 'arm' alone is not a plan. Flight (take off, land, hover, \
          move the aircraft) is not available: never invent steps for it. Fill every field; use \
          null for fields a step does not use. If the instruction is not one of these commands, \
          is ambiguous, or asks for something unsafe, return an empty steps list and say why in \
