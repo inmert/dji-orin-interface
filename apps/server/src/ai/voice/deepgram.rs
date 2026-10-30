@@ -93,12 +93,10 @@ impl Provider for Deepgram {
         let projects = match self.get("/projects") {
             Ok(v) => v,
             Err(e) => {
-                st.key_ok = Some(!e.starts_with("unreachable"));
+                // Reached the service and it refused: the key is the problem.
+                // Could not reach it: nothing is known about the key.
+                st.key_ok = (!e.starts_with("unreachable")).then_some(false);
                 st.note = e;
-                if st.key_ok == Some(true) {
-                    // Reached the service and it refused: the key is the problem.
-                    st.key_ok = Some(false);
-                }
                 return st;
             }
         };

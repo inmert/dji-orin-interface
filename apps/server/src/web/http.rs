@@ -349,7 +349,16 @@ pub fn serve(addr: &str, tls: Option<SslAcceptor>, cx: Arc<Context>) {
         if tls.is_some() { "s" } else { "" },
         cx.web_root.display()
     );
-    for stream in listener.incoming().flatten() {
+    for stream in listener.incoming() {
+        let stream = match stream {
+            Ok(s) => s,
+            Err(e) => {
+                // Out of descriptors or the like: don't spin at full CPU.
+                logln!("http: accept on {addr}: {e}; retrying");
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+        };
         let peer = stream
             .peer_addr()
             .map(|a| a.to_string())

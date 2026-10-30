@@ -271,7 +271,8 @@ export function CommandBar({ plan, enabled, send }: {
   const run = () => {
     if (!checked) return;
     if (window.confirm(`Run: ${plan.preview!.steps.map(stepText).join(", then ")}?\nProps may spin. People clear.`)) {
-      send({ cmd: "plan", text: text.trim(), run: true });
+      // Run exactly what was shown: a model asked again may answer differently.
+      send({ cmd: "plan", text: text.trim(), run: true, plan: plan.preview! });
     }
   };
   return (

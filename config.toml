@@ -48,14 +48,14 @@ rc = { cam1 = 0x11, cam2 = 0x15 }   # (RC_VIDEO=cam1=0x11,cam2=0x15 | off)
 # Online speech recognition for hold-to-talk: "openai" or "deepgram"; empty
 # picks the first with a key. The model is the provider's default when empty.
 provider = ""              # (STT_PROVIDER)
-model = ""                 # (STT_MODEL)
+model = ""                 # a model of the provider in use; the others keep their defaults  (STT_MODEL)
 
 [understanding]
 # The model that turns a sentence into a plan: "anthropic", "openai" or
 # "local"; empty picks the first configured, in that order. The grammar is
 # always the fallback.
 provider = ""              # (LLM_PROVIDER)
-model = ""                 # the online model; empty is the provider's default  (LLM_MODEL)
+model = ""                 # a model of the online provider in use; empty is its default  (LLM_MODEL)
 
 [understanding.local]
 # A model served on the Orin by an OpenAI-compatible server

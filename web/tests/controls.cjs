@@ -240,7 +240,8 @@ assert.deepEqual([8000, 0, -8000].map(modeSwitch), ['P', 'S', 'A'], 'RC mode swi
   [talk, check, run, cancel] = buttons(tree);
   assert.equal(run.props.disabled, false);
   run.props.onClick();
-  assert.equal(JSON.stringify(sent.at(-1)), JSON.stringify({ cmd: 'plan', text: 'arm for 2 seconds then disarm', run: true }));
+  assert.equal(JSON.stringify(sent.at(-1)), JSON.stringify({ cmd: 'plan', text: 'arm for 2 seconds then disarm', run: true, plan: checked.preview }),
+    'run sends the previewed steps, not the sentence alone');
   tree = CommandBar({ plan: { ...checked, running: true, plan: checked.preview, preview: null }, enabled: true, send: c => sent.push(c) });
   [talk, check, run, cancel] = buttons(tree);
   assert.equal(run.props.disabled, true, 'no second run while one runs');

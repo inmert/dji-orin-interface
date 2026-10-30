@@ -259,10 +259,16 @@ fn run(vehicle: &Vehicle, plan: Plan) {
         Err(Stop::Failed(e)) => (false, format!("step {} failed: {e}", at + 1)),
     };
     if !ok && armed {
-        // Never leave the motors running because a plan stopped early.
-        message += match vehicle.motors.perform(Request::Stop, MOTOR_STEP_TIMEOUT) {
-            Ok(_) => "; motors stopped",
-            Err(_) => "; MOTORS STILL RUNNING: stop them",
+        // Never leave the motors running because a plan stopped early. A
+        // disarm step that failed because the motors were already off (the
+        // FC refuses a redundant stop) is not a reason to alarm.
+        message += if vehicle.motors.status().armed == Some(false) {
+            "; motors already stopped"
+        } else {
+            match vehicle.motors.perform(Request::Stop, MOTOR_STEP_TIMEOUT) {
+                Ok(_) => "; motors stopped",
+                Err(_) => "; MOTORS STILL RUNNING: stop them",
+            }
         };
     }
     logln!("plan: {message}");

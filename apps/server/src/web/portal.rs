@@ -57,20 +57,44 @@ pub enum WsCommand {
     /// (`{"steps":[…]}`): interpreted ([`understand`]), then shown back
     /// (`run` false) or run. Interpretation may ask an online model, so it
     /// happens on its own thread; the snapshot's plan status shows progress.
+    /// With `plan`, the steps the UI previewed and the operator confirmed,
+    /// those run as given (validated) instead of interpreting `text` again:
+    /// a model asked twice may answer differently.
     Plan {
         text: String,
         #[serde(default)]
         run: bool,
+        #[serde(default)]
+        plan: Option<dji_commands::Plan>,
     },
     /// Stop the running plan after its current step.
     Cancel,
 }
 
 /// Interpret `text` and then preview or run it, off the caller's thread.
-fn plan(vehicle: &Arc<Vehicle>, text: String, run: bool) {
+/// A `confirmed` plan runs as given, with `text` as its label.
+fn plan(vehicle: &Arc<Vehicle>, text: String, run: bool, confirmed: Option<dji_commands::Plan>) {
     let text = text.trim().to_string();
     if text.is_empty() {
         return logln!("plan: empty command ignored");
+    }
+    if let Some(p) = confirmed {
+        let ex = &vehicle.executor;
+        let status = ex.status();
+        // The preview's source, when this is the plan it showed.
+        let source = if status.text == text && status.preview.as_ref() == Some(&p) {
+            status.source
+        } else {
+            "confirmed".to_string()
+        };
+        match ex.start(vehicle, &text, p.clone(), &source) {
+            Ok(()) => logln!("plan: started confirmed {text:?} ({source}): {p}"),
+            Err(e) => {
+                logln!("plan: refused confirmed {text:?}: {e}");
+                ex.preview(&text, Err(e), &source);
+            }
+        }
+        return;
     }
     vehicle.executor.parsing(&text);
     let vehicle = Arc::clone(vehicle);
@@ -172,7 +196,7 @@ pub fn handle(text: &str, vehicle: &Arc<Vehicle>, thermal: Option<&Report>) {
             Ok(()) => logln!("ws: usb_flight queued"),
             Err(e) => logln!("ws: {e}"),
         },
-        Ok(WsCommand::Plan { text, run }) => plan(vehicle, text, run),
+        Ok(WsCommand::Plan { text, run, plan: p }) => plan(vehicle, text, run, p),
         Ok(WsCommand::Cancel) => {
             vehicle.executor.cancel();
             logln!("plan: cancel requested");
@@ -304,5 +328,29 @@ mod tests {
         handle(r#"{"cmd":"cancel"}"#, &v, None);
         std::thread::sleep(std::time::Duration::from_millis(250));
         assert_eq!(v.executor.status().message, "cancelled");
+    }
+
+    #[test]
+    fn a_confirmed_plan_runs_as_given_without_a_second_interpretation() {
+        use dji_commands::Command;
+        let v = Vehicle::new();
+        // The sentence would not parse, but the operator confirmed these steps.
+        handle(
+            r#"{"cmd":"plan","text":"whatever the model said","run":true,"plan":{"steps":[{"cmd":"wait","seconds":0.2}]}}"#,
+            &v,
+            None,
+        );
+        let s = v.executor.status();
+        assert!(s.running && !s.parsing && s.source == "confirmed", "{s:?}");
+        assert_eq!(s.plan.unwrap().steps, [Command::Wait { seconds: 0.2 }]);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        // Over the limits: refused before anything runs.
+        handle(
+            r#"{"cmd":"plan","text":"long","run":true,"plan":{"steps":[{"cmd":"wait","seconds":1000}]}}"#,
+            &v,
+            None,
+        );
+        let s = v.executor.status();
+        assert!(!s.running && s.preview_error.unwrap().contains("limit"));
     }
 }

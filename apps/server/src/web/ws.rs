@@ -88,7 +88,10 @@ pub fn client<C: Conn>(stream: C, peer: String, vehicle: &Arc<Vehicle>, feeds: &
     if let Err(e) = stream
         .tcp()
         .set_read_timeout(Some(Duration::from_secs(5)))
-        .and_then(|()| stream.tcp().set_write_timeout(Some(Duration::from_secs(1))))
+        // Snapshots go out at 10 Hz; a client whose link cannot take one
+        // within this long is dropped (and reconnects), so keep it generous
+        // enough that a congested Wi-Fi moment does not cost the connection.
+        .and_then(|()| stream.tcp().set_write_timeout(Some(Duration::from_secs(5))))
     {
         logln!("ws: cannot set timeouts for {peer}: {e}");
         return;

@@ -78,10 +78,16 @@ impl Registry {
     fn new(wanted: Option<&str>, model: Option<&str>) -> Self {
         let keys = super::online::keys();
         let mut providers: Vec<Box<dyn Provider>> = Vec::new();
+        // `model` names a model of the provider in use: the one chosen, or
+        // the first configured. The others keep their defaults.
+        let model_for =
+            |name: &str, first: bool| model.filter(|_| wanted.map_or(first, |w| w == name));
         if let Some(k) = keys.openai.clone() {
+            let model = model_for("openai", providers.is_empty());
             providers.push(Box::new(openai::OpenAi::new(k, model)));
         }
         if let Some(k) = keys.deepgram.clone() {
+            let model = model_for("deepgram", providers.is_empty());
             providers.push(Box::new(deepgram::Deepgram::new(k, model)));
         }
         let active = providers

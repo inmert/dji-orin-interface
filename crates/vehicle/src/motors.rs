@@ -90,9 +90,17 @@ pub struct State {
     /// A request from the UI, carried out once by [`run`].
     pub pending: Option<Request>,
     pub status: Status,
-    /// Requests carried out so far (success or not); [`Motors::perform`]
-    /// waits for this to move.
-    completed: u64,
+    /// Every queued request gets the next ticket, so a waiter can tell its
+    /// own outcome from another request's.
+    tickets: u64,
+    /// The ticket of [`State::pending`].
+    pending_ticket: u64,
+    /// The ticket of the request being carried out, if any.
+    executing: Option<u64>,
+    /// The last request carried out: ticket, success, message.
+    done: Option<(u64, bool, String)>,
+    /// A queued request a later one replaced before it ran.
+    displaced: Option<u64>,
     /// "Allow with USB" succeeded during the current USB session.
     pub usb_allowed: bool,
     /// Motor start (`true`) / stop over the RC link, for the RC writer to
@@ -124,6 +132,11 @@ impl Motors {
     /// waiting stop, and the USB unlock never displaces a motor request.
     /// `Err` names why it was not queued.
     pub fn request(&self, req: Request) -> Result<(), &'static str> {
+        self.enqueue(req).map(|_| ())
+    }
+
+    /// [`Motors::request`], returning the request's ticket.
+    fn enqueue(&self, req: Request) -> Result<u64, &'static str> {
         let mut s = self.lock();
         match req {
             Request::Start if s.pending == Some(Request::Stop) => {
@@ -134,25 +147,52 @@ impl Motors {
             }
             _ => {}
         }
+        if s.pending.is_some() {
+            s.displaced = Some(s.pending_ticket);
+        }
+        s.tickets += 1;
+        s.pending_ticket = s.tickets;
         s.pending = Some(req);
-        Ok(())
+        Ok(s.pending_ticket)
     }
 
-    /// Queue `req` and wait for it to be carried out: the outcome message,
-    /// or why it failed. `Err` also when nothing picks the request up within
+    /// For the worker: the next request and its ticket.
+    fn take(&self) -> Option<(Request, u64)> {
+        let mut s = self.lock();
+        let req = s.pending.take()?;
+        s.executing = Some(s.pending_ticket);
+        Some((req, s.pending_ticket))
+    }
+
+    /// For the worker: `ticket` finished.
+    fn finished(&self, ticket: u64, ok: bool, message: String) {
+        let mut s = self.lock();
+        s.executing = None;
+        s.done = Some((ticket, ok, message));
+    }
+
+    /// Queue `req` and wait for *that* request to be carried out: the outcome
+    /// message, or why it failed. Another request's completion (a UI button
+    /// pressed meanwhile) is not mistaken for it. `Err` also when a later
+    /// request replaced it before it ran, or when nothing picks it up within
     /// `timeout` (the motor worker is not running).
     pub fn perform(&self, req: Request, timeout: Duration) -> Result<String, String> {
-        let before = self.lock().completed;
-        self.request(req)?;
+        let ticket = self.enqueue(req)?;
         let deadline = Instant::now() + timeout;
         loop {
             sleep(Duration::from_millis(50));
             let s = self.lock();
-            if s.completed > before {
-                return match s.status.ok {
-                    Some(true) => Ok(s.status.message.clone()),
-                    _ => Err(s.status.message.clone()),
+            if let Some((t, ok, message)) = &s.done
+                && *t == ticket
+            {
+                return if *ok {
+                    Ok(message.clone())
+                } else {
+                    Err(message.clone())
                 };
+            }
+            if s.displaced == Some(ticket) {
+                return Err(format!("{} replaced by a later request", req.name()));
             }
             if Instant::now() >= deadline {
                 return Err(format!("{} did not complete in time", req.name()));
@@ -209,7 +249,7 @@ pub fn run(vehicle: &std::sync::Arc<Vehicle>, app_id: Option<u32>) {
     let motors = &vehicle.motors;
     loop {
         sleep(Duration::from_millis(50));
-        let Some(req) = motors.lock().pending.take() else {
+        let Some((req, ticket)) = motors.take() else {
             continue;
         };
         let what = req.name();
@@ -234,14 +274,10 @@ pub fn run(vehicle: &std::sync::Arc<Vehicle>, app_id: Option<u32>) {
         if req == Request::UsbFlight && result.is_ok() {
             motors.lock().usb_allowed = true;
         }
-        set_status(
-            motors,
-            false,
-            what,
-            Some(result.is_ok()),
-            result.unwrap_or_else(|e| e),
-        );
-        motors.lock().completed += 1;
+        let ok = result.is_ok();
+        let message = result.unwrap_or_else(|e| e);
+        set_status(motors, false, what, Some(ok), message.clone());
+        motors.finished(ticket, ok, message);
     }
 }
 
@@ -310,6 +346,36 @@ mod tests {
         // A stop cannot be displaced, so a start is refused outright.
         m.request(Request::Stop).unwrap();
         assert!(m.perform(Request::Start, Duration::ZERO).is_err());
+    }
+
+    #[test]
+    fn perform_reports_its_own_request_not_an_earlier_one() {
+        let m = Motors::default();
+        // A UI start is in progress when the executor queues a stop.
+        m.request(Request::Start).unwrap();
+        let (req, t1) = m.take().unwrap();
+        assert_eq!(req, Request::Start);
+        let m = std::sync::Arc::new(m);
+        let stop = {
+            let m = std::sync::Arc::clone(&m);
+            std::thread::spawn(move || m.perform(Request::Stop, Duration::from_secs(2)))
+        };
+        sleep(Duration::from_millis(100));
+        // The start finishes first: the stop's waiter must not take its outcome.
+        m.finished(t1, true, "motors started".into());
+        sleep(Duration::from_millis(150));
+        assert!(
+            !stop.is_finished(),
+            "took the start's completion as its own"
+        );
+        let (req, t2) = m.take().unwrap();
+        assert_eq!(req, Request::Stop);
+        m.finished(t2, true, "motors stopped".into());
+        assert_eq!(stop.join().unwrap().unwrap(), "motors stopped");
+        // A request replaced before it ran says so instead of waiting.
+        let a = m.enqueue(Request::Start).unwrap();
+        m.request(Request::Stop).unwrap();
+        assert_eq!(m.lock().displaced, Some(a));
     }
 
     #[test]

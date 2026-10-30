@@ -76,9 +76,14 @@ struct Registry {
 impl Registry {
     fn new(cfg: &crate::config::Understanding) -> Self {
         let keys = super::online::keys();
-        let model = cfg.model();
+        let wanted = cfg.provider();
         let mut providers: Vec<Box<dyn Provider>> = Vec::new();
+        // `model` names a model of the provider in use: the one chosen, or
+        // the first configured. The others keep their defaults.
+        let model_for =
+            |name: &str, first: bool| cfg.model().filter(|_| wanted.map_or(first, |w| w == name));
         if let Some(k) = keys.anthropic.clone() {
+            let model = model_for("anthropic", providers.is_empty());
             providers.push(Box::new(anthropic::Anthropic::new(
                 k,
                 keys.anthropic_admin.clone(),
@@ -86,6 +91,7 @@ impl Registry {
             )));
         }
         if let Some(k) = keys.openai.clone() {
+            let model = model_for("openai", providers.is_empty());
             providers.push(Box::new(openai::OpenAi::new(k, model)));
         }
         if cfg.local.enabled {
@@ -94,7 +100,6 @@ impl Registry {
                 cfg.local.model().map(String::from),
             )));
         }
-        let wanted = cfg.provider();
         let active = providers
             .iter()
             .position(|p| wanted.is_none_or(|w| w == p.name()));
@@ -281,7 +286,17 @@ pub fn plan_from_json(text: &str) -> Result<Plan, String> {
     let mut plan = Vec::with_capacity(steps.len());
     for s in steps {
         let seconds = s["seconds"].as_f64().map(|x| x as f32);
-        let camera = s["camera"].as_u64().map(|c| c as u8).unwrap_or(1);
+        // Out of range is caught by the limits (camera 1 or 2); anything that
+        // is not a small whole number is refused here rather than wrapped.
+        let camera_given = match &s["camera"] {
+            serde_json::Value::Null => None,
+            v => Some(
+                v.as_u64()
+                    .and_then(|c| u8::try_from(c).ok())
+                    .ok_or_else(|| format!("camera {v} is not a camera number"))?,
+            ),
+        };
+        let camera = camera_given.unwrap_or(1);
         let direction = s["direction"].as_str().unwrap_or("");
         plan.push(match s["cmd"].as_str().unwrap_or("") {
             "arm" => Command::Arm,
@@ -308,7 +323,7 @@ pub fn plan_from_json(text: &str) -> Result<Plan, String> {
                 seconds: seconds.unwrap_or(1.0),
             },
             "recenter" => Command::Recenter {
-                camera: s["camera"].as_u64().map(|c| c as u8),
+                camera: camera_given,
             },
             "link" => Command::Link {
                 on: s["on"].as_bool().ok_or("a link step without on")?,
@@ -358,6 +373,12 @@ mod tests {
         );
         assert!(plan_from_json(r#"{"steps":[{"cmd":"pan","seconds":1,"camera":1,"direction":"up","on":null}],"problem":null}"#).is_err());
         assert!(plan_from_json("nonsense").is_err());
+        for bad in ["257", "-1", "1.5"] {
+            let json = format!(
+                r#"{{"steps":[{{"cmd":"recenter","seconds":null,"camera":{bad},"direction":null,"on":null}}],"problem":null}}"#
+            );
+            assert!(plan_from_json(&json).is_err(), "camera {bad}");
+        }
         assert!(schema()["properties"]["steps"].is_object());
         assert_eq!(
             schema()["properties"]["steps"]["items"]["required"]

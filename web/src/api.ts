@@ -260,8 +260,10 @@ export type Command =
   | { cmd: "motors"; on: boolean }
   /** Allow arming with the aircraft's USB API port connected (until restart). */
   | { cmd: "usb_flight" }
-  /** A command sentence: checked and shown back, or run when `run` is true. */
-  | { cmd: "plan"; text: string; run?: boolean }
+  /** A command sentence: checked and shown back, or run when `run` is true.
+   *  With `plan`, the previewed steps the operator confirmed run as given
+   *  (the server validates them) instead of the sentence being interpreted again. */
+  | { cmd: "plan"; text: string; run?: boolean; plan?: { steps: PlanStep[] } }
   /** Stop the running plan after its current step. */
   | { cmd: "cancel" }
   | { cmd: "stop" };
