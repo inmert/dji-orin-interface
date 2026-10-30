@@ -1,6 +1,6 @@
 //! HTTP server, plain and over TLS: the built web front end, the camera
-//! feeds as MJPEG, the WebSocket at `/ws` ([`crate::ws`]) and voice
-//! transcription (`POST /voice`, [`crate::voice`]).
+//! feeds as MJPEG, the WebSocket at `/ws` ([`crate::ws`]) and voice input
+//! (`POST /voice`, `GET /voice/status`, [`crate::voice`]).
 //!
 //! Hand-rolled HTTP/1.1, one thread per connection, `Connection: close` on
 //! every response: enough for a LAN portal, and it lets one listener (and
@@ -294,6 +294,14 @@ fn handle<C: Conn + 'static>(mut conn: C, peer: String, cx: &Context) -> io::Res
             }
             None => respond(&mut conn, "404 Not Found", "text/plain", b"no such feed"),
         },
+        ("GET", "/voice/status") => respond(
+            &mut conn,
+            "200 OK",
+            "application/json",
+            serde_json::to_string(&voice::statuses())
+                .unwrap_or_default()
+                .as_bytes(),
+        ),
         ("POST", "/voice") => {
             let kind = head.header("content-type").unwrap_or("audio/webm");
             match voice::transcribe(&body, kind) {

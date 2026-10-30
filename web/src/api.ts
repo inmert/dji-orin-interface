@@ -174,6 +174,33 @@ export function stepText(s: PlanStep): string {
 export interface Transcript {
   text: string;
   ms: number;
+  provider: string;
+}
+
+/** One speech-recognition provider's state (`GET /voice/status`). */
+export interface VoiceProvider {
+  provider: string;
+  /** The one hold-to-talk uses. */
+  active: boolean;
+  model: string;
+  /** Whether the service accepted the key; null when it could not be asked. */
+  key_ok: boolean | null;
+  /** Balance or spend when the service exposes it, e.g. "$4.12 left". */
+  balance: string | null;
+  note: string;
+}
+
+export const isVoiceProvider = (v: unknown): v is VoiceProvider =>
+  record(v) && typeof v.provider === "string" && typeof v.active === "boolean"
+  && typeof v.model === "string" && optional(v.key_ok, b => typeof b === "boolean")
+  && optional(v.balance, b => typeof b === "string") && typeof v.note === "string";
+
+/** Fetch every provider's status; an empty list when none is configured. */
+export async function fetchVoiceStatus(): Promise<VoiceProvider[]> {
+  const res = await fetch("/voice/status", { cache: "no-store" });
+  if (!res.ok) throw new Error(`status ${res.status}`);
+  const body: unknown = await res.json();
+  return Array.isArray(body) ? body.filter(isVoiceProvider) : [];
 }
 
 /** Progress of the command executor (Status in crates/vehicle/src/executor.rs). */

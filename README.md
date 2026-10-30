@@ -113,7 +113,7 @@ apps/
     src/http.rs                 HTTP(S) on one port each: files, video, /ws upgrade, POST /voice
     src/ws.rs                   the WebSocket: snapshots down, portal messages up
     src/tls.rs                  self-signed certificate for the HTTPS listener (browser microphone)
-    src/voice.rs                voice upload → online speech recognition (OpenAI) → text
+    src/voice.rs, voice/*.rs    voice upload → chosen speech service (OpenAI, Deepgram) → text; status
 web/                          Vite + React + TypeScript front end (built to web/dist)
 scripts/                      gadget bring-up/teardown + run_{capture,bridge,server}.sh
 logs/                         run-script logs (git-ignored)
@@ -339,12 +339,19 @@ and the sentence appears in the box already checked. The browser's recording
 goes to the server (`POST /voice`), which forwards it to an online
 speech-recognition service and returns the text; the Orin itself does no
 speech decoding, only the validation and execution of the resulting command.
-The provider is OpenAI's transcription API (`gpt-4o-transcribe`; `STT_MODEL`
-changes it), given the command vocabulary as context. Put the API key, one
-line, in `secrets/openai.key` (git-ignored; `STT_KEY_FILE` or
-`OPENAI_API_KEY` override) and restart the server; only the server holds the
-key. Browsers only open the microphone on a secure origin, so use the HTTPS
-listener:
+The services sit behind one interface (`apps/server/src/voice.rs`), so the
+provider is a choice: **OpenAI** (`gpt-4o-transcribe`) or **Deepgram**
+(`nova-3`), each given the command vocabulary as context. Put the API key,
+one line, in `secrets/openai.key` or `secrets/deepgram.key` (git-ignored;
+`OPENAI_API_KEY` / `DEEPGRAM_API_KEY` override) and restart; the first
+configured provider is used, `STT_PROVIDER=deepgram` picks one, and
+`STT_MODEL` changes the model. Only the server ever holds a key; an Anthropic
+key is recognised and ignored, since Claude does not transcribe speech. The
+bar shows the active service, whether its key was accepted, and the balance
+when the service reports one (Deepgram does; OpenAI's API has no balance
+endpoint); `GET /voice/status` returns the same for every configured
+provider. Browsers only open the microphone on a secure origin, so use the
+HTTPS listener:
 `https://<orin-ip>:8443/`, with a self-signed certificate the server
 generates on first start into `certs/` (accept the browser's warning once;
 `TLS=off` disables the listener). The WebSocket is served on the same port
@@ -472,8 +479,10 @@ its mount's heading and the video stream described above (see
       (activation + control authority), with the USB flight unlock (2026-10-28, props off)
 - [x] Text command plans (arm / wait / disarm) run on the aircraft from the portal (2026-10-29)
 - [x] Gimbal steps (pan, tilt, recenter, link) in the command model
-- [x] Voice input: hold-to-talk in the portal, transcribed by an online service (OpenAI); the
-      on-device whisper.cpp path was tried first (2026-10-29) and dropped for accuracy
+- [x] Voice input: hold-to-talk in the portal, transcribed by a chosen online service (OpenAI or
+      Deepgram) with key check and balance; on-device whisper.cpp was tried first (2026-10-29)
+      and dropped for accuracy
+- [ ] Live check of voice input with a speech-provider key
 - [ ] Flight steps (take off, land, hover, move) in the command model
 - [ ] An LLM fallback for free-form sentences, producing the plan JSON
 

@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { Command, FlightData, FlightLink, MotorStatus, NO_PORT, PlanStatus, Transcript, stepText } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { Command, FlightData, FlightLink, MotorStatus, NO_PORT, PlanStatus, Transcript, VoiceProvider, fetchVoiceStatus, stepText } from "../api";
 import { Icon } from "../components/Icon";
 import { Row, Tile, deg, fixed, useAdvancing } from "./Tile";
 
@@ -231,6 +231,15 @@ export function useVoice(onText: (text: string) => void) {
   return { state, error, start, stop };
 }
 
+/** One line on the speech service: provider, key, balance. */
+export function voiceSummary(providers: VoiceProvider[] | null): string {
+  if (providers === null) return "Speech: checking…";
+  const active = providers.find(p => p.active);
+  if (!active) return "Speech: no provider key (secrets/openai.key or deepgram.key)";
+  const key = active.key_ok === null ? "key unchecked" : active.key_ok ? "key OK" : `key rejected: ${active.note}`;
+  return `Speech: ${active.provider} ${active.model} · ${key}${active.balance ? ` · ${active.balance}` : ""}`;
+}
+
 /** Text commands: type (or speak) a sentence, check what the server made of it, run it. */
 export function CommandBar({ plan, enabled, send }: {
   plan: PlanStatus;
@@ -244,6 +253,13 @@ export function CommandBar({ plan, enabled, send }: {
     send({ cmd: "plan", text: spoken });
   });
   const mic = canRecord();
+  const [providers, setProviders] = useState<VoiceProvider[] | null>(null);
+  const [statusAt, setStatusAt] = useState(0);
+  useEffect(() => {
+    let gone = false;
+    fetchVoiceStatus().then(p => { if (!gone) setProviders(p); }).catch(() => { if (!gone) setProviders([]); });
+    return () => { gone = true; };
+  }, [statusAt]);
   const checked = plan.preview && plan.text === text.trim();
   const steps = plan.running || plan.ok !== null ? plan.plan?.steps ?? [] : [];
   const run = () => {
@@ -297,6 +313,11 @@ export function CommandBar({ plan, enabled, send }: {
         <button type="button" className="tool danger" disabled={!plan.running}
           onClick={() => send({ cmd: "cancel" })}>
           Cancel
+        </button>
+      </div>
+      <div className="command-status muted">
+        <button type="button" className="link" title="Check the speech service again" onClick={() => { setProviders(null); setStatusAt(Date.now()); }}>
+          {voiceSummary(providers)}
         </button>
       </div>
       <div className="command-status" role="status">

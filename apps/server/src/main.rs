@@ -44,8 +44,9 @@
 //! `fpv=0x13` takes the FPV feed from the RC instead of UDT). `RC_DUMP=<file>` appends the raw RC→Orin bytes
 //! to a file for offline analysis. `TLS_CERT_DIR` is where the self-signed
 //! certificate lives (default `certs`; `TLS=off` disables the TLS listener).
-//! `STT_KEY_FILE` (default `secrets/openai.key`) or `OPENAI_API_KEY` holds
-//! the speech-recognition key for voice input, and `STT_MODEL` the model.
+//! Speech-recognition keys for voice input live in `secrets/*.key`
+//! (`SECRETS_DIR`; or `OPENAI_API_KEY` / `DEEPGRAM_API_KEY`); `STT_PROVIDER`
+//! and `STT_MODEL` choose the service and model ([`voice`]).
 
 mod http;
 mod portal;

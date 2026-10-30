@@ -221,7 +221,8 @@ assert.deepEqual([8000, 0, -8000].map(modeSwitch), ['P', 'S', 'A'], 'RC mode swi
 // The command bar checks a sentence first and only runs what the server showed back.
 {
   const bar = harness();
-  bar.react.useState = () => ['arm for 2 seconds then disarm', () => {}];
+  // The text box starts filled; every other piece of state keeps its initial value.
+  bar.react.useState = value => [value === '' ? 'arm for 2 seconds then disarm' : value, () => {}];
   const { CommandBar } = load('src/telemetry/FlightPanel.tsx', bar.react,
     { window: { confirm: () => true, isSecureContext: false }, navigator: {} });
   const sent = [];

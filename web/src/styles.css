@@ -755,6 +755,18 @@ input[type="range"] {
 .command-status {
   font-size: 13px;
 }
+.command-status button.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.command-status button.link:hover {
+  text-decoration: underline;
+}
 .tool.danger.on {
   border-color: var(--line-strong);
   background: var(--raised);
