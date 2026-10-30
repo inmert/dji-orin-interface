@@ -388,6 +388,28 @@ mod tests {
     }
 
     #[test]
+    fn the_development_file_only_tightens_the_limits() {
+        // config.dev.toml must parse, keep every other default, and stay
+        // within the flight limits it is a ground-test version of.
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../config.dev.toml"
+        ))
+        .unwrap();
+        let cfg: Config = toml::from_str(&text).unwrap();
+        let (dev, def) = (&cfg.limits, LimitsCfg::default());
+        assert!(dev.max_wait_s <= def.max_wait_s && dev.max_armed_s <= def.max_armed_s);
+        assert!(dev.max_gimbal_s <= def.max_gimbal_s && dev.max_steps <= def.max_steps);
+        // docs/reverify.md H17 arms for 20 s.
+        assert!(dev.max_wait_s >= 20 && dev.max_armed_s >= 20);
+        let defaults = Config {
+            limits: LimitsCfg::default(),
+            ..cfg
+        };
+        assert_eq!(defaults, Config::default());
+    }
+
+    #[test]
     fn environment_overrides_the_file() {
         let mut cfg = Config::default();
         let env = |name: &str| {

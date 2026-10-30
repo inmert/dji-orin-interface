@@ -21,6 +21,12 @@ date and the outcome next to each step, and keep the log.
 - Have the OSDK app id at hand; the CP210x adapter on the SDK UART; the
   aircraft's USB API port connected only for section F.
 - The RC powered and booted *before* its cable is plugged in.
+- Optional: run on `config.dev.toml` (tighter plan limits, still enough for
+  H17/H18) by putting `CONFIG=$PWD/config.dev.toml` after `sudo`; A1's
+  `config:` line then names that file.
+- If the log stops at `gadget: BIND`, check the three cases under
+  "Bring-up order matters" in the README (Type-C mode, USB role switch, RC
+  stuck in `default`) before replugging again.
 
 ## A. Start-up and settings (18e147c)
 

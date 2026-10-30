@@ -50,6 +50,6 @@ if wait_enable 10; then
     echo "RC link up after soft reconnect"
 else
     echo "RC still not enabled (UDC $(cat "$UDC/state")). If the RC is attached, check its" \
-         "Type-C state, or unplug and replug it." >&2
+         "Type-C state and the USB role switch (README, Bring-up order), or unplug and replug it." >&2
     exit 1
 fi

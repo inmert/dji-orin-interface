@@ -1,0 +1,21 @@
+# Development settings: config.toml's defaults with tighter plan limits for
+# props-off ground tests on the real aircraft. Pick it for one run with
+#
+#   sudo CONFIG=$PWD/config.dev.toml scripts/run_server.sh
+#
+# (or scripts/restart_server.sh). Only the keys that differ from config.toml
+# are here; every other key keeps its default. Relative paths are relative to
+# this file, so it stays at the repository root next to config.toml.
+
+[motors]
+# Needed for the UART motor path (docs/reverify.md E, F) and as the fallback
+# when the RC link is down. Unset: motor commands go over the RC link only.
+# osdk_app_id = 1234567     # (OSDK_APP_ID)
+
+[limits]
+# Long enough for docs/reverify.md H17/H18 ("arm for 20 seconds then
+# disarm"), half the flight defaults otherwise.
+max_wait_s = 30
+max_armed_s = 30
+max_gimbal_s = 5
+max_steps = 16

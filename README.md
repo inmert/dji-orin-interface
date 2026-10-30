@@ -125,6 +125,7 @@ apps/
 web/                          Vite + React + TypeScript front end (built to web/dist)
 scripts/                      gadget bring-up/teardown + run_{capture,bridge,server}.sh, run_local_llm.sh
 config.toml                   the server's settings, every value at its default (see Configuration)
+config.dev.toml               tighter plan limits for props-off ground tests (CONFIG=…)
 logs/                         run-script logs (git-ignored)
 docs/                         protocol and hardware notes
 .github/workflows/ci.yml      fmt, clippy, tests, docs, web build
@@ -257,14 +258,21 @@ sudo scripts/restore_gadget.sh             # when done
 
 **Bring-up order matters.** Start the server first, power the RC on and let it
 fully boot, and only then plug the cable in; `logs/server.log` shows `gadget: ENABLE`
-within seconds. Two ways it fails silently (the log stops at `gadget: BIND`):
+within seconds. Three ways it fails silently (the log stops at `gadget: BIND`):
 
 - *The RC boots with the cable already attached.* While booting it looks like a
   sink, so the Orin's Type-C controller locks the port into source (host) mode
   and never re-checks, and no gadget can attach. Check with
   `cat /sys/bus/i2c/devices/1-0025/fusb301/fmode`: `SNK(4)` is right, `SRC(1)`
   is this failure. Unplug, then replug with the RC already booted.
-- *The roles are right (`SNK(4)`) but `/sys/class/udc/*/state` stays `default`.*
+- *`SNK(4)`, but the USB role switch never followed.* The Type-C controller
+  attached as a sink, yet `cat /sys/class/usb_role/usb2-0-role-switch/role`
+  says `none`, so the Orin's device controller is not on the bus at all and
+  `/sys/class/udc/*/state` stays `default`. Replugging and RC power-cycles
+  don't clear it (seen 2026-10-30 after a `SRC(1)` boot). With the RC plugged
+  in, `echo device | sudo tee /sys/class/usb_role/usb2-0-role-switch/role`
+  brings `gadget: ENABLE` within a second; the role resets on detach.
+- *The roles are right (`SNK(4)`, role `device`) but the state stays `default`.*
   The RC reset the bus but never enumerated, typically after it sat connected to
   a gadget that couldn't answer it (the stock `l4t` one, or a wedged teardown).
   Replugging doesn't clear this; power-cycle the RC with the cable unplugged,
@@ -277,7 +285,12 @@ settings, video feeds, the speech and understanding providers and models,
 and the plan limits. Every key is optional and the checked-in file holds the
 defaults, so it doubles as the reference (a test keeps the two equal). Relative
 paths are relative to the file; `CONFIG=<file>` names another one, which
-`run_server.sh` exports as `$REPO/config.toml`. The environment variable noted
+`run_server.sh` exports as `$REPO/config.toml`.
+[`config.dev.toml`](config.dev.toml) is such a file for props-off ground tests:
+it only halves the plan limits (30 s waits and armed time, 5 s gimbal moves,
+16 steps; a test keeps it within the flight limits and everything else at the
+defaults): `sudo CONFIG=$PWD/config.dev.toml scripts/run_server.sh`.
+The environment variable noted
 beside each key (`OSDK_APP_ID`, `OSDK_UART`, `LLM_PROVIDER`, …) overrides it
 for one run, which is what the `sudo VAR=… scripts/run_server.sh` examples below
 do; the server reads the environment nowhere else. Protocol timing (frame rates,
