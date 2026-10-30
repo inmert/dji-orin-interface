@@ -88,8 +88,9 @@ crates/
     vendor/udt4/                UDT 4.11 from DJI's Onboard SDK (BSD licence)
     shim.cpp, build.rs          C API over it, built with the system C++ compiler
     src/lib.rs                  safe receive-only Stream (connect/recv/close)
-  commands/                   DOMAIN — the command model (serde only)
+  commands/                   DOMAIN — the command model (serde, serde_json)
     src/lib.rs                  Command, Plan + Limits, the JSON shape for structured output
+    src/capability.rs           the registry: one descriptor per step; derives the models' schema, instructions and step decoding
     src/grammar.rs              plain sentences → Plan ("arm for 5 seconds then disarm")
   vehicle/                    APPLICATION — the aircraft as typed capabilities over its links
     src/lib.rs                  Vehicle: telemetry snapshot + gimbal, thermal, motors, executor
@@ -150,11 +151,11 @@ operations, so a second caller (a command API, say) uses the same ones.
 
 The project is **Rust** (edition 2024). `common`, `protocol` and `transport` are
 **dependency-free**, so the capture tools (`cargo build -p dji-tools`) never
-compile the web stack. `dji-commands` and `dji-vehicle` add only `serde`
-(plans and status types are serialized to the UI), and `dji-vehicle` turns
-on `dji-protocol`'s `serde` feature; `dji-server` alone pulls the web crates
-(`tungstenite`, `serde_json`, and `openssl` against the system library for
-the HTTPS listener). `dji-udt` has no crate dependencies either; its
+compile the web stack. `dji-commands` adds `serde` and `serde_json` (plans
+are serialized to the UI; the capability registry derives the models' JSON
+schema), `dji-vehicle` adds `serde` and turns on `dji-protocol`'s `serde`
+feature; `dji-server` alone pulls the web crates (`tungstenite`, `toml`, and
+`openssl` against the system library for the HTTPS listener). `dji-udt` has no crate dependencies either; its
 build script compiles the vendored C++ with the system `c++` and `ar`. Framing and checksums live once in
 `dji_protocol::duml` (`parse`/`scan`/`build`, the streaming `Decoder`), shared
 by the gadget side, the host side, and the command builders. Safe USB wrappers

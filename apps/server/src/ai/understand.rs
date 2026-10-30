@@ -7,9 +7,11 @@
 //! against its limits before anything runs, and a plan typed as JSON
 //! (`{"steps":[…]}`) skips both.
 //!
-//! The model is asked for the plan as structured output against
-//! [`schema`], one flat step shape (such schemas allow no recursion), which
-//! [`plan_from_json`] turns into a [`Plan`]. Keys come from
+//! The model is asked for the plan as structured output against the
+//! schema the capability registry derives ([`dji_commands::capability`]:
+//! one flat step shape, since such schemas allow no recursion), with the
+//! instructions derived from the same registry; [`plan_from_json`] turns
+//! the answer into a [`Plan`] through it. Keys come from
 //! [`super::online`]; `config.toml` `[understanding]` (`LLM_PROVIDER`,
 //! `LLM_MODEL`) picks the provider, by default the first configured of
 //! `anthropic`, `openai`, `local`, and the online model. The local provider
@@ -28,7 +30,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 
-use dji_commands::{Command, Horizontal, Plan, Vertical, grammar};
+use dji_commands::{Command, Plan, Step, grammar, instructions, schema, schema_compact};
 use dji_common::logln;
 
 /// How long a status check (key, spend) is reused before asking again.
@@ -211,135 +213,36 @@ pub fn interpret(text: &str) -> Result<Interpreted, String> {
     }
 }
 
-/// What the models are told about the aircraft and the command set.
-pub const INSTRUCTIONS: &str = "You translate spoken or typed instructions for a DJI Matrice 210 \
-drone into a list of steps. The only steps are: arm (start all motors), disarm (stop all motors), \
-wait (seconds), pan (gimbal yaw: camera 1 or 2, direction left or right, seconds), tilt (gimbal \
-pitch: camera 1 or 2, direction up or down, seconds), recenter (camera 1 or 2, or null for both), \
-link (on: true engages the lock so camera 2 follows camera 1, false releases it). Camera defaults to \
-1 and a gimbal move defaults to 1 second when not stated. 'arm for N seconds' means arm, wait N, \
-disarm; do not add a disarm when the motors are already stopped at that point. Flight (take off, \
-land, hover, move the aircraft) is not available: never invent steps for it. Fill every field; use \
-null for fields a step does not use. If the instruction is not one of these commands, is ambiguous, \
-or asks for something unsafe, return an empty steps list and say why in problem; otherwise problem \
-is null. Examples: 'arm for 5 seconds then disarm' is arm, wait 5, disarm. 'start the motors, hold \
-for ten seconds, then stop them' is arm, wait 10, disarm. 'look up for three seconds on camera 2' is \
-tilt camera 2 up 3. 'unlink and pan right for two and a half seconds' is link off, then pan camera 1 \
-right 2.5. 'recenter' alone is recenter with camera null.";
-
-/// The JSON schema the models fill: one flat step shape. Every field of a
-/// step is required (OpenAI's strict mode insists), so unused ones are null.
-///
-/// Key order matters: `serde_json` is built with `preserve_order` so the
-/// schema reaches the model as written, `steps` before `problem` and `cmd`
-/// first in a step. Sorted alphabetically (`camera, cmd, …`, `problem`
-/// first) Claude stopped after the first step on most multi-step sentences
-/// and the local model attached durations to the wrong step.
-pub fn schema() -> serde_json::Value {
-    let mut s = schema_compact();
-    s["properties"]["steps"]["items"]["required"] =
-        serde_json::json!(["cmd", "seconds", "camera", "direction", "on"]);
-    s
-}
-
-/// [`schema`] with only `cmd` required per step, for a server that turns
-/// the schema into a grammar ([`local`]): a step is then a few tokens
-/// instead of five nulls, which is most of a small model's output time.
-/// [`plan_from_json`] reads a missing field as null.
-pub fn schema_compact() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "steps": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "cmd": {"type": "string", "enum": ["arm", "disarm", "wait", "pan", "tilt", "recenter", "link"]},
-                        "seconds": {"type": ["number", "null"]},
-                        "camera": {"type": ["integer", "null"]},
-                        "direction": {"anyOf": [
-                            {"type": "string", "enum": ["left", "right", "up", "down"]},
-                            {"type": "null"}
-                        ]},
-                        "on": {"type": ["boolean", "null"]}
-                    },
-                    "required": ["cmd"],
-                    "additionalProperties": false
-                }
-            },
-            "problem": {"type": ["string", "null"]}
-        },
-        "required": ["steps", "problem"],
-        "additionalProperties": false
-    })
-}
-
-/// A [`Plan`] from the JSON the schema produces.
+/// A [`Plan`] from the JSON the schema produces: the model's `problem` is
+/// the error when it gave one, else every step decoded by the registry.
 pub fn plan_from_json(text: &str) -> Result<Plan, String> {
-    let v: serde_json::Value =
+    #[derive(serde::Deserialize)]
+    struct Answer {
+        #[serde(default)]
+        steps: Vec<Step>,
+        #[serde(default)]
+        problem: Option<String>,
+    }
+    let a: Answer =
         serde_json::from_str(text).map_err(|e| format!("model returned invalid JSON: {e}"))?;
-    if let Some(problem) = v["problem"].as_str().filter(|p| !p.is_empty()) {
-        return Err(problem.to_string());
+    if let Some(problem) = a.problem.filter(|p| !p.is_empty()) {
+        return Err(problem);
     }
-    let steps = v["steps"].as_array().ok_or("model returned no steps")?;
-    let mut plan = Vec::with_capacity(steps.len());
-    for s in steps {
-        let seconds = s["seconds"].as_f64().map(|x| x as f32);
-        // Out of range is caught by the limits (camera 1 or 2); anything that
-        // is not a small whole number is refused here rather than wrapped.
-        let camera_given = match &s["camera"] {
-            serde_json::Value::Null => None,
-            v => Some(
-                v.as_u64()
-                    .and_then(|c| u8::try_from(c).ok())
-                    .ok_or_else(|| format!("camera {v} is not a camera number"))?,
-            ),
-        };
-        let camera = camera_given.unwrap_or(1);
-        let direction = s["direction"].as_str().unwrap_or("");
-        plan.push(match s["cmd"].as_str().unwrap_or("") {
-            "arm" => Command::Arm,
-            "disarm" => Command::Disarm,
-            "wait" => Command::Wait {
-                seconds: seconds.ok_or("a wait step without seconds")?,
-            },
-            "pan" => Command::Pan {
-                camera,
-                direction: match direction {
-                    "left" => Horizontal::Left,
-                    "right" => Horizontal::Right,
-                    d => return Err(format!("pan direction {d:?} is not left or right")),
-                },
-                seconds: seconds.unwrap_or(1.0),
-            },
-            "tilt" => Command::Tilt {
-                camera,
-                direction: match direction {
-                    "up" => Vertical::Up,
-                    "down" => Vertical::Down,
-                    d => return Err(format!("tilt direction {d:?} is not up or down")),
-                },
-                seconds: seconds.unwrap_or(1.0),
-            },
-            "recenter" => Command::Recenter {
-                camera: camera_given,
-            },
-            "link" => Command::Link {
-                on: s["on"].as_bool().ok_or("a link step without on")?,
-            },
-            other => return Err(format!("unknown step {other:?}")),
-        });
-    }
-    if plan.is_empty() {
+    let steps = a
+        .steps
+        .iter()
+        .map(Command::from_step)
+        .collect::<Result<Vec<_>, _>>()?;
+    if steps.is_empty() {
         return Err("the model found nothing to do".into());
     }
-    Ok(Plan::new(plan))
+    Ok(Plan::new(steps))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dji_commands::Horizontal;
 
     #[test]
     fn converts_model_json_into_a_plan() {
@@ -380,17 +283,7 @@ mod tests {
             assert!(plan_from_json(&json).is_err(), "camera {bad}");
         }
         assert!(schema()["properties"]["steps"].is_object());
-        assert_eq!(
-            schema()["properties"]["steps"]["items"]["required"]
-                .as_array()
-                .unwrap()
-                .len(),
-            5
-        );
-        assert_eq!(
-            schema_compact()["properties"]["steps"]["items"]["required"],
-            serde_json::json!(["cmd"])
-        );
+        assert!(!instructions().is_empty());
         assert_eq!(
             plan_from_json(
                 r#"{"steps":[{"cmd":"wait","seconds":2},{"cmd":"recenter"}],"problem":null}"#

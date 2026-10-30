@@ -3,7 +3,7 @@
 //! asks `GET /v1/models/{model}` to prove the key; OpenAI's API exposes no
 //! balance.
 
-use super::{INSTRUCTIONS, Provider, Status, plan_from_json, schema};
+use super::{Provider, Status, instructions, plan_from_json, schema};
 use crate::ai::online::{agent, error_detail, read};
 use dji_commands::Plan;
 
@@ -82,7 +82,7 @@ pub(super) fn body(model: &str, text: &str) -> serde_json::Value {
     serde_json::json!({
         "model": model,
         "messages": [
-            {"role": "system", "content": INSTRUCTIONS},
+            {"role": "system", "content": instructions()},
             {"role": "user", "content": text}
         ],
         "response_format": {

@@ -5,7 +5,7 @@
 //! from the organisation's cost report, which needs an Admin API key
 //! (`sk-ant-admin…`, in `secrets/` too) — a workspace key is refused there.
 
-use super::{INSTRUCTIONS, Provider, Status, plan_from_json, schema};
+use super::{Provider, Status, instructions, plan_from_json, schema};
 use crate::ai::online::{agent, error_detail, read};
 use dji_commands::Plan;
 
@@ -85,7 +85,7 @@ impl Provider for Anthropic {
             "model": self.model,
             // Thinking tokens count against this; a tight cap truncates the plan.
             "max_tokens": 8192,
-            "system": INSTRUCTIONS,
+            "system": instructions(),
             "messages": [{"role": "user", "content": text}],
             "output_config": {"effort": "low", "format": {"type": "json_schema", "schema": schema()}},
             "fallbacks": "default"

@@ -7,12 +7,19 @@
 //! * [`Plan`] — an ordered list of steps with a check against [`Limits`],
 //!   and the JSON shape (`{"steps":[{"cmd":"arm"},{"cmd":"wait","seconds":5},…]}`)
 //!   a structured-output model is asked to produce.
+//! * [`capability`] — the registry: one descriptor per step kind, from
+//!   which the model's schema and instructions, the decoding of its steps
+//!   and each step's duration limit are derived. Adding a command is one
+//!   entry there, one `Command` variant, and its execution in the vehicle.
 //! * [`grammar`] — a deterministic parser for plain sentences such as
-//!   `arm for 5 seconds then disarm`, tried before any model.
+//!   `arm for 5 seconds then disarm`, the fallback behind any model.
 //!
 //! Pure logic, no I/O: the vehicle's executor runs a plan.
 
+pub mod capability;
 pub mod grammar;
+
+pub use capability::{CAPABILITIES, Capability, Step, instructions, schema, schema_compact};
 
 use std::fmt;
 use std::time::Duration;
@@ -192,7 +199,7 @@ impl Plan {
                 if !(seconds.is_finite() && seconds > 0.0) {
                     return Err(Invalid::BadWait);
                 }
-                let is_wait = matches!(step, Command::Wait { .. });
+                let is_wait = step.capability().duration == capability::Duration::Wait;
                 let max = if is_wait {
                     limits.max_wait
                 } else {
