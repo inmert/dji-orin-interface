@@ -1,6 +1,7 @@
 //! HTTP server, plain and over TLS: the built web front end, the camera
-//! feeds as MJPEG, the WebSocket at `/ws` ([`crate::ws`]) and voice input
-//! (`POST /voice`, `GET /voice/status`, [`crate::voice`]).
+//! feeds as MJPEG, the WebSocket at `/ws` ([`crate::ws`]), voice input
+//! (`POST /voice`, [`crate::voice`]) and the online services' status
+//! (`GET /ai/status`, speech and understanding).
 //!
 //! Hand-rolled HTTP/1.1, one thread per connection, `Connection: close` on
 //! every response: enough for a LAN portal, and it lets one listener (and
@@ -20,7 +21,7 @@ use dji_common::logln;
 use dji_vehicle::Vehicle;
 
 use crate::video::{Feed, Feeds};
-use crate::{die, voice, ws};
+use crate::{die, understand, voice, ws};
 
 /// Longest request head (request line + headers) accepted.
 const MAX_HEAD: usize = 16 * 1024;
@@ -294,13 +295,16 @@ fn handle<C: Conn + 'static>(mut conn: C, peer: String, cx: &Context) -> io::Res
             }
             None => respond(&mut conn, "404 Not Found", "text/plain", b"no such feed"),
         },
-        ("GET", "/voice/status") => respond(
+        ("GET", "/ai/status") => respond(
             &mut conn,
             "200 OK",
             "application/json",
-            serde_json::to_string(&voice::statuses())
-                .unwrap_or_default()
-                .as_bytes(),
+            serde_json::json!({
+                "speech": voice::statuses(),
+                "understanding": understand::statuses(),
+            })
+            .to_string()
+            .as_bytes(),
         ),
         ("POST", "/voice") => {
             let kind = head.header("content-type").unwrap_or("audio/webm");

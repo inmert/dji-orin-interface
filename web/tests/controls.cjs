@@ -226,7 +226,7 @@ assert.deepEqual([8000, 0, -8000].map(modeSwitch), ['P', 'S', 'A'], 'RC mode swi
   const { CommandBar } = load('src/telemetry/FlightPanel.tsx', bar.react,
     { window: { confirm: () => true, isSecureContext: false }, navigator: {} });
   const sent = [];
-  const idle = { running: false, plan: null, text: '', step: 0, message: '', ok: null, preview: null, preview_error: null };
+  const idle = { running: false, plan: null, text: '', step: 0, message: '', ok: null, preview: null, preview_error: null, parsing: false, source: '' };
   let tree = CommandBar({ plan: idle, enabled: true, send: c => sent.push(c) });
   let [talk, check, run, cancel] = buttons(tree);
   assert.equal(talk.props.disabled, true, 'no microphone without a secure context');

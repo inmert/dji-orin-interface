@@ -177,10 +177,10 @@ export interface Transcript {
   provider: string;
 }
 
-/** One speech-recognition provider's state (`GET /voice/status`). */
-export interface VoiceProvider {
+/** One online provider's state (`GET /ai/status`). */
+export interface AiProvider {
   provider: string;
-  /** The one hold-to-talk uses. */
+  /** The one its role uses. */
   active: boolean;
   model: string;
   /** Whether the service accepted the key; null when it could not be asked. */
@@ -190,17 +190,24 @@ export interface VoiceProvider {
   note: string;
 }
 
-export const isVoiceProvider = (v: unknown): v is VoiceProvider =>
+export const isAiProvider = (v: unknown): v is AiProvider =>
   record(v) && typeof v.provider === "string" && typeof v.active === "boolean"
   && typeof v.model === "string" && optional(v.key_ok, b => typeof b === "boolean")
   && optional(v.balance, b => typeof b === "string") && typeof v.note === "string";
 
-/** Fetch every provider's status; an empty list when none is configured. */
-export async function fetchVoiceStatus(): Promise<VoiceProvider[]> {
-  const res = await fetch("/voice/status", { cache: "no-store" });
+/** The online services by role: speech recognition and command understanding. */
+export interface AiStatus {
+  speech: AiProvider[];
+  understanding: AiProvider[];
+}
+
+/** Fetch every provider's status; empty lists when none is configured. */
+export async function fetchAiStatus(): Promise<AiStatus> {
+  const res = await fetch("/ai/status", { cache: "no-store" });
   if (!res.ok) throw new Error(`status ${res.status}`);
   const body: unknown = await res.json();
-  return Array.isArray(body) ? body.filter(isVoiceProvider) : [];
+  const list = (v: unknown) => (Array.isArray(v) ? v.filter(isAiProvider) : []);
+  return record(body) ? { speech: list(body.speech), understanding: list(body.understanding) } : { speech: [], understanding: [] };
 }
 
 /** Progress of the command executor (Status in crates/vehicle/src/executor.rs). */
@@ -213,6 +220,10 @@ export interface PlanStatus {
   ok: boolean | null;
   preview: { steps: PlanStep[] } | null;
   preview_error: string | null;
+  /** A sentence is being interpreted (a model may be answering). */
+  parsing: boolean;
+  /** What produced the plan or preview: a model name, "grammar" or "json". */
+  source: string;
 }
 
 /** Motor start/stop progress (Status in apps/server/src/motors.rs). */
@@ -365,7 +376,8 @@ export function isPlanStatus(value: unknown): value is PlanStatus {
   return record(value) && bool(value.running) && typeof value.text === "string"
     && counter(value.step) && typeof value.message === "string"
     && optional(value.ok, bool) && optional(value.plan, isPlan)
-    && optional(value.preview, isPlan) && optional(value.preview_error, e => typeof e === "string");
+    && optional(value.preview, isPlan) && optional(value.preview_error, e => typeof e === "string")
+    && bool(value.parsing) && typeof value.source === "string";
 }
 
 // JSON parsing alone does not validate a snapshot. Reject the whole message

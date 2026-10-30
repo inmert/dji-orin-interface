@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Command, FlightData, FlightLink, MotorStatus, NO_PORT, PlanStatus, Transcript, VoiceProvider, fetchVoiceStatus, stepText } from "../api";
+import { AiProvider, AiStatus, Command, FlightData, FlightLink, MotorStatus, NO_PORT, PlanStatus, Transcript, fetchAiStatus, stepText } from "../api";
 import { Icon } from "../components/Icon";
 import { Row, Tile, deg, fixed, useAdvancing } from "./Tile";
 
@@ -231,14 +231,19 @@ export function useVoice(onText: (text: string) => void) {
   return { state, error, start, stop };
 }
 
-/** One line on the speech service: provider, key, balance. */
-export function voiceSummary(providers: VoiceProvider[] | null): string {
-  if (providers === null) return "Speech: checking…";
+/** One line on a role's service: provider, model, key, balance. */
+export function roleSummary(role: string, providers: AiProvider[] | null, none: string): string {
+  if (providers === null) return `${role}: checking…`;
   const active = providers.find(p => p.active);
-  if (!active) return "Speech: no provider key (secrets/openai.key or deepgram.key)";
+  if (!active) return `${role}: ${none}`;
   const key = active.key_ok === null ? "key unchecked" : active.key_ok ? "key OK" : `key rejected: ${active.note}`;
-  return `Speech: ${active.provider} ${active.model} · ${key}${active.balance ? ` · ${active.balance}` : ""}`;
+  return `${role}: ${active.provider} ${active.model} · ${key}${active.balance ? ` · ${active.balance}` : ""}`;
 }
+
+export const voiceSummary = (status: AiStatus | null) =>
+  roleSummary("Speech", status && status.speech, "no provider key (secrets/openai.key or deepgram.key)");
+export const understandingSummary = (status: AiStatus | null) =>
+  roleSummary("Understanding", status && status.understanding, "local grammar only (add secrets/anthropic.key or openai.key for a model)");
 
 /** Text commands: type (or speak) a sentence, check what the server made of it, run it. */
 export function CommandBar({ plan, enabled, send }: {
@@ -253,11 +258,12 @@ export function CommandBar({ plan, enabled, send }: {
     send({ cmd: "plan", text: spoken });
   });
   const mic = canRecord();
-  const [providers, setProviders] = useState<VoiceProvider[] | null>(null);
+  const [ai, setAi] = useState<AiStatus | null>(null);
   const [statusAt, setStatusAt] = useState(0);
   useEffect(() => {
     let gone = false;
-    fetchVoiceStatus().then(p => { if (!gone) setProviders(p); }).catch(() => { if (!gone) setProviders([]); });
+    fetchAiStatus().then(p => { if (!gone) setAi(p); })
+      .catch(() => { if (!gone) setAi({ speech: [], understanding: [] }); });
     return () => { gone = true; };
   }, [statusAt]);
   const checked = plan.preview && plan.text === text.trim();
@@ -302,12 +308,12 @@ export function CommandBar({ plan, enabled, send }: {
         >
           <Icon name="mic" /> {voice.state === "listening" ? "Listening" : voice.state === "transcribing" ? "Transcribing" : "Talk"}
         </button>
-        <button type="button" className="tool" disabled={plan.running || !text.trim()}
+        <button type="button" className="tool" disabled={plan.running || plan.parsing || !text.trim()}
           onClick={() => send({ cmd: "plan", text: text.trim() })}>
           Check
         </button>
         <button type="button" className={`tool${checked ? " on" : ""}`}
-          disabled={!enabled || plan.running || !checked} onClick={run}>
+          disabled={!enabled || plan.running || plan.parsing || !checked} onClick={run}>
           Run
         </button>
         <button type="button" className="tool danger" disabled={!plan.running}
@@ -316,8 +322,8 @@ export function CommandBar({ plan, enabled, send }: {
         </button>
       </div>
       <div className="command-status muted">
-        <button type="button" className="link" title="Check the speech service again" onClick={() => { setProviders(null); setStatusAt(Date.now()); }}>
-          {voiceSummary(providers)}
+        <button type="button" className="link" title="Check the online services again" onClick={() => { setAi(null); setStatusAt(Date.now()); }}>
+          {voiceSummary(ai)}<br />{understandingSummary(ai)}
         </button>
       </div>
       <div className="command-status" role="status">
@@ -325,12 +331,14 @@ export function CommandBar({ plan, enabled, send }: {
           <span className="error-text">Voice: {voice.error}</span>
         ) : voice.state === "transcribing" ? (
           <span>Transcribing…</span>
+        ) : plan.parsing ? (
+          <span>Understanding…</span>
         ) : plan.running ? (
           <span>Running step {plan.step + 1} of {steps.length}: <strong>{plan.message}</strong></span>
         ) : plan.preview_error ? (
           <span className="error-text">{plan.preview_error}</span>
         ) : checked ? (
-          <span>Will do: <strong>{plan.preview!.steps.map(stepText).join(", then ")}</strong></span>
+          <span>Will do{plan.source ? ` (${plan.source})` : ""}: <strong>{plan.preview!.steps.map(stepText).join(", then ")}</strong></span>
         ) : plan.ok !== null ? (
           <span className={plan.ok ? "" : "error-text"}>Last plan: {plan.message}</span>
         ) : (

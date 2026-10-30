@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use dji_commands::{Plan, grammar};
 use dji_common::logln;
 use dji_vehicle::Vehicle;
-use dji_vehicle::executor::Executor;
+
+use crate::understand;
 use dji_vehicle::gimbal::{Camera, GimbalMove};
 use dji_vehicle::motors::Request;
 use dji_vehicle::thermal::{DisplayMode, Report};
@@ -54,7 +54,9 @@ pub enum WsCommand {
     #[serde(rename = "usb_flight")]
     UsbFlight,
     /// A command sentence (`arm for 5 seconds then disarm`) or a JSON plan
-    /// (`{"steps":[…]}`): checked and shown back (`run` false), or run.
+    /// (`{"steps":[…]}`): interpreted ([`understand`]), then shown back
+    /// (`run` false) or run. Interpretation may ask an online model, so it
+    /// happens on its own thread; the snapshot's plan status shows progress.
     Plan {
         text: String,
         #[serde(default)]
@@ -64,18 +66,40 @@ pub enum WsCommand {
     Cancel,
 }
 
-/// A plan from a sentence (the grammar) or from the JSON shape, checked
-/// against the executor's limits.
-fn plan_from(text: &str, executor: &Executor) -> Result<Plan, String> {
-    let text = text.trim();
-    let plan = if text.starts_with('{') {
-        serde_json::from_str::<Plan>(text).map_err(|e| format!("bad plan JSON: {e}"))?
-    } else {
-        grammar::parse(text).map_err(|e| e.to_string())?
-    };
-    plan.validate(executor.limits())
-        .map_err(|e| e.to_string())?;
-    Ok(plan)
+/// Interpret `text` and then preview or run it, off the caller's thread.
+fn plan(vehicle: &Arc<Vehicle>, text: String, run: bool) {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return logln!("plan: empty command ignored");
+    }
+    vehicle.executor.parsing(&text);
+    let vehicle = Arc::clone(vehicle);
+    std::thread::spawn(move || {
+        let ex = &vehicle.executor;
+        let result = understand::interpret(&text).and_then(|i| {
+            i.plan
+                .validate(ex.limits())
+                .map_err(|e| format!("{e} (from {})", i.source))?;
+            Ok(i)
+        });
+        match result {
+            Ok(i) if run => match ex.start(&vehicle, &text, i.plan.clone(), &i.source) {
+                Ok(()) => logln!("plan: started {text:?} ({}): {}", i.source, i.plan),
+                Err(e) => {
+                    logln!("plan: refused {text:?}: {e}");
+                    ex.preview(&text, Err(e), &i.source);
+                }
+            },
+            Ok(i) => {
+                logln!("plan: checked {text:?} ({}): {}", i.source, i.plan);
+                ex.preview(&text, Ok(i.plan), &i.source);
+            }
+            Err(e) => {
+                logln!("plan: refused {text:?}: {e}");
+                ex.preview(&text, Err(e), "");
+            }
+        }
+    });
 }
 
 /// Parse one UI message and apply it. `thermal` is the thermal camera's
@@ -148,21 +172,7 @@ pub fn handle(text: &str, vehicle: &Arc<Vehicle>, thermal: Option<&Report>) {
             Ok(()) => logln!("ws: usb_flight queued"),
             Err(e) => logln!("ws: {e}"),
         },
-        Ok(WsCommand::Plan { text, run }) => {
-            let ex = &vehicle.executor;
-            let plan = plan_from(&text, ex);
-            if !run {
-                logln!("plan: checked {text:?}: {plan:?}");
-                return ex.preview(&text, plan);
-            }
-            match plan.and_then(|p| ex.start(vehicle, &text, p)) {
-                Ok(()) => logln!("plan: started {text:?}"),
-                Err(e) => {
-                    logln!("plan: refused {text:?}: {e}");
-                    ex.preview(&text, Err(e));
-                }
-            }
-        }
+        Ok(WsCommand::Plan { text, run }) => plan(vehicle, text, run),
         Ok(WsCommand::Cancel) => {
             vehicle.executor.cancel();
             logln!("plan: cancel requested");
@@ -243,16 +253,29 @@ mod tests {
         assert_eq!(v.motors.take_rc_pending(), None);
     }
 
+    /// Wait for the interpretation thread to finish.
+    fn settled(v: &Vehicle) -> dji_vehicle::executor::Status {
+        for _ in 0..100 {
+            let s = v.executor.status();
+            if !s.parsing {
+                return s;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("interpretation did not finish");
+    }
+
     #[test]
     fn plan_messages_check_then_run() {
         use dji_commands::Command;
+        // No model key in the test environment: the grammar does the work.
         let v = Vehicle::new();
         handle(
             r#"{"cmd":"plan","text":"arm for 2 seconds then disarm"}"#,
             &v,
             None,
         );
-        let s = v.executor.status();
+        let s = settled(&v);
         assert!(!s.running);
         assert_eq!(
             s.preview.map(|p| p.steps),
@@ -263,26 +286,21 @@ mod tests {
             ])
         );
         handle(r#"{"cmd":"plan","text":"fly away"}"#, &v, None);
-        assert!(
-            v.executor
-                .status()
-                .preview_error
-                .unwrap()
-                .contains("fly away")
-        );
+        assert!(settled(&v).preview_error.unwrap().contains("fly away"));
         handle(
             r#"{"cmd":"plan","text":"wait 1000 seconds","run":true}"#,
             &v,
             None,
         );
-        let s = v.executor.status();
+        let s = settled(&v);
         assert!(!s.running && s.preview_error.unwrap().contains("limit"));
         handle(
             r#"{"cmd":"plan","text":"{\"steps\":[{\"cmd\":\"wait\",\"seconds\":0.2}]}","run":true}"#,
             &v,
             None,
         );
-        assert!(v.executor.status().running);
+        let s = settled(&v);
+        assert!(s.running && s.source == "json");
         handle(r#"{"cmd":"cancel"}"#, &v, None);
         std::thread::sleep(std::time::Duration::from_millis(250));
         assert_eq!(v.executor.status().message, "cancelled");

@@ -113,7 +113,9 @@ apps/
     src/http.rs                 HTTP(S) on one port each: files, video, /ws upgrade, POST /voice
     src/ws.rs                   the WebSocket: snapshots down, portal messages up
     src/tls.rs                  self-signed certificate for the HTTPS listener (browser microphone)
+    src/online.rs               API keys from secrets/ (by prefix or file name) + HTTP helpers
     src/voice.rs, voice/*.rs    voice upload → chosen speech service (OpenAI, Deepgram) → text; status
+    src/understand.rs, understand/*.rs  sentence → plan: online model (Anthropic, OpenAI), grammar fallback
 web/                          Vite + React + TypeScript front end (built to web/dist)
 scripts/                      gadget bring-up/teardown + run_{capture,bridge,server}.sh
 logs/                         run-script logs (git-ignored)
@@ -313,8 +315,13 @@ sudo OSDK_APP_ID=<app id> scripts/run_server.sh
 **Text and voice commands.** The *Flight telemetry* page also has a command
 bar. Type a sentence such as `arm for 5 seconds then disarm`, press **Check**
 to see the steps the server made of it, then **Run** (asks for confirmation);
-**Cancel** stops a running plan after its current step. The grammar
-(`crates/commands`) understands:
+**Cancel** stops a running plan after its current step. Understanding the
+sentence is an online model's job first (`apps/server/src/understand.rs`:
+Claude through Anthropic's API, or OpenAI; the first with a key in
+`secrets/` is used, `LLM_PROVIDER` / `LLM_MODEL` choose), asked for the
+plan as structured output against a fixed schema, so free-form phrasing
+works. The local grammar (`crates/commands`) is the fallback when no model
+is configured or the call fails, and understands:
 
 - motors: `arm` / `start motors` / `spin up`, `disarm` / `stop`; `arm for N`
   always disarms again afterwards;
@@ -325,11 +332,11 @@ to see the steps the server made of it, then **Run** (asks for confirmation);
 
 joined by *then*, *and* or commas. A JSON plan
 (`{"steps":[{"cmd":"arm"},{"cmd":"wait","seconds":5},{"cmd":"disarm"}]}`) is
-accepted in the same box; that is the shape a language model will be asked
-for once one is added behind the grammar. Every plan is checked against
-limits (60 s per wait, 60 s of motors per plan, 10 s per gimbal move) before
-it runs, and a plan that fails or is cancelled after arming stops the motors
-first. Motor steps go out over the same path as the buttons: the RC link
+accepted in the same box and skips both. Whatever produced it, every plan
+is checked on the Orin against the limits (60 s per wait, 60 s of motors per
+plan, 10 s per gimbal move) before it runs, and a plan that fails or is
+cancelled after arming stops the motors first. The bar says which source
+made the plan. Motor steps go out over the same path as the buttons: the RC link
 first. Verified on the aircraft with `arm for 3 seconds then disarm`
 (2026-10-29, props on): ACK 0.2 s after each step, FC status On ground for
 the 3 s, then Stopped.
@@ -347,10 +354,11 @@ one line, in `secrets/openai.key` or `secrets/deepgram.key` (git-ignored;
 configured provider is used, `STT_PROVIDER=deepgram` picks one, and
 `STT_MODEL` changes the model. Only the server ever holds a key; an Anthropic
 key is recognised and ignored, since Claude does not transcribe speech. The
-bar shows the active service, whether its key was accepted, and the balance
-when the service reports one (Deepgram does; OpenAI's API has no balance
-endpoint); `GET /voice/status` returns the same for every configured
-provider. Browsers only open the microphone on a secure origin, so use the
+bar shows, for speech and for understanding, the active service, whether
+its key was accepted, and the balance or spend when the service reports one
+(Deepgram balance; Anthropic month-to-date spend with an Admin API key in
+`secrets/`; OpenAI's API has neither); `GET /ai/status` returns the same for
+every configured provider. Browsers only open the microphone on a secure origin, so use the
 HTTPS listener:
 `https://<orin-ip>:8443/`, with a self-signed certificate the server
 generates on first start into `certs/` (accept the browser's warning once;
@@ -482,9 +490,10 @@ its mount's heading and the video stream described above (see
 - [x] Voice input: hold-to-talk in the portal, transcribed by a chosen online service (OpenAI or
       Deepgram) with key check and balance; on-device whisper.cpp was tried first (2026-10-29)
       and dropped for accuracy
-- [ ] Live check of voice input with a speech-provider key
+- [x] Voice input checked live with Deepgram (2026-10-30): word-perfect in 0.25–0.5 s
+- [x] Command understanding by an online model (Claude or OpenAI) with the grammar as fallback
 - [ ] Flight steps (take off, land, hover, move) in the command model
-- [ ] An LLM fallback for free-form sentences, producing the plan JSON
+
 
 ## Acknowledgements
 

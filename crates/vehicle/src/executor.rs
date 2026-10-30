@@ -44,6 +44,10 @@ pub struct Status {
     /// The last plan checked but not run, and why it was refused.
     pub preview: Option<Plan>,
     pub preview_error: Option<String>,
+    /// A sentence is being interpreted (a model may be answering).
+    pub parsing: bool,
+    /// What produced the plan or preview: a model name, `grammar` or `json`.
+    pub source: String,
 }
 
 #[derive(Default)]
@@ -62,10 +66,22 @@ impl Executor {
         &self.limits
     }
 
-    /// Record a plan for the UI to show without running it.
-    pub fn preview(&self, text: &str, plan: Result<Plan, String>) {
+    /// Note that `text` is being interpreted; [`Executor::preview`] or
+    /// [`Executor::start`] ends it.
+    pub fn parsing(&self, text: &str) {
         let mut s = self.status.lock().unwrap();
         s.text = text.to_string();
+        s.parsing = true;
+        s.preview = None;
+        s.preview_error = None;
+    }
+
+    /// Record a plan for the UI to show without running it.
+    pub fn preview(&self, text: &str, plan: Result<Plan, String>, source: &str) {
+        let mut s = self.status.lock().unwrap();
+        s.text = text.to_string();
+        s.parsing = false;
+        s.source = source.to_string();
         match plan {
             Ok(p) => {
                 s.preview = Some(p);
@@ -80,11 +96,18 @@ impl Executor {
 
     /// Start `plan` on its own thread. `Err` if one is already running or
     /// the plan is over the limits.
-    pub fn start(&self, vehicle: &Arc<Vehicle>, text: &str, plan: Plan) -> Result<(), String> {
+    pub fn start(
+        &self,
+        vehicle: &Arc<Vehicle>,
+        text: &str,
+        plan: Plan,
+        source: &str,
+    ) -> Result<(), String> {
         plan.validate(&self.limits).map_err(|e| e.to_string())?;
         {
             let mut s = self.status.lock().unwrap();
             if s.running {
+                s.parsing = false;
                 return Err("a plan is already running".into());
             }
             *s = Status {
@@ -96,6 +119,8 @@ impl Executor {
                 ok: None,
                 preview: None,
                 preview_error: None,
+                parsing: false,
+                source: source.to_string(),
             };
         }
         self.cancel.store(false, Ordering::SeqCst);
@@ -259,10 +284,10 @@ mod tests {
             Command::Wait { seconds: 0.2 },
             Command::Wait { seconds: 5.0 },
         ]);
-        v.executor.start(&v, "wait a bit", plan).unwrap();
+        v.executor.start(&v, "wait a bit", plan, "test").unwrap();
         assert!(
             v.executor
-                .start(&v, "", Plan::new(vec![Command::Disarm]))
+                .start(&v, "", Plan::new(vec![Command::Disarm]), "test")
                 .is_err()
         );
         sleep(Duration::from_millis(350));
@@ -286,7 +311,7 @@ mod tests {
             Command::Link { on: true },
             Command::Recenter { camera: None },
         ]);
-        v.executor.start(&v, "", plan).unwrap();
+        v.executor.start(&v, "", plan, "test").unwrap();
         sleep(Duration::from_millis(120));
         let g = v.gimbal.lock();
         assert_eq!((g.cam2.active, g.cam2.yaw), (true, -GIMBAL_SPEED));
@@ -306,7 +331,7 @@ mod tests {
         let plan = Plan::new(vec![Command::Wait { seconds: 1e9 }]);
         assert!(
             v.executor
-                .start(&v, "", plan)
+                .start(&v, "", plan, "test")
                 .unwrap_err()
                 .contains("limit")
         );
@@ -318,10 +343,14 @@ mod tests {
         // No motor worker runs in tests, so Arm times out; the plan reports
         // the failed step and, having never armed, stops nothing.
         let v = Vehicle::new();
-        v.executor.preview("arm", Ok(Plan::new(vec![Command::Arm])));
-        assert!(v.executor.status().preview.is_some());
+        v.executor.parsing("arm");
+        assert!(v.executor.status().parsing);
+        v.executor
+            .preview("arm", Ok(Plan::new(vec![Command::Arm])), "grammar");
+        let s = v.executor.status();
+        assert!(s.preview.is_some() && !s.parsing && s.source == "grammar");
         let plan = Plan::new(vec![Command::Wait { seconds: 0.1 }, Command::Arm]);
-        v.executor.start(&v, "", plan).unwrap();
+        v.executor.start(&v, "", plan, "test").unwrap();
         // Make Arm fail fast: a pending stop refuses a start.
         v.motors.request(Request::Stop).unwrap();
         sleep(Duration::from_millis(400));
